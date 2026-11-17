@@ -13,12 +13,24 @@ python integrations/external_runner/refresh_current.py BABA 2026-11-16 \
 
 Set `SEC_EDGAR_USER_AGENT` to your own name and email before SEC calls. If unset, the header says that no contact email is configured. It does not invent one.
 
-The command writes a new directory under `acquisitions/` and does not replace an existing digest. Add `--install-for-runner` only after review; that copies the baseline digest into `backups/` and then places the new file at `sentiment_digest_TICKER_PRICE-DATE.md`. `--refuse-on-failure` exits 4 when no filing text or results excerpt was extracted. Historical mode does not fetch.
+The command writes a new directory under `acquisitions/`. `--install-for-runner` and `--runner` install that file only when `content_validated` and `latest_discovery_verified` are true. Otherwise they exit 4 and leave the previous digest in place. Historical mode does not fetch and does not start the runner.
 
-Supported acquisition: `BABA`, `LI`, and `0700` / `0700.HK`. Any other ticker returns `NOT_COVERED` and leaves old files in place.
+Supported acquisition: `BABA`, `LI`, and `0700` / `0700.HK`. Any other ticker returns `NOT_COVERED` and leaves old files in place. This is not 29-symbol coverage.
 
-BABA and LI: each current run reads the EDGAR full-text search index and that CIK's submissions index, then keeps filings whose acceptance time is at or before `--decision-at`. `www.sec.gov` filing indexes returned 403 from this environment after the submissions JSON succeeded. A 403 is not retried. `fetched` is true only when filing text or the Tencent results PDF text was extracted. XBRL companyfacts can still be present when the archive is blocked; that run is not marked fetched.
+`fetch_succeeded` means a public response was stored. `content_validated` means the text has an issuer, a report period, a currency, and an income or cash-flow amount. `latest_discovery_verified` is false while a discovery conflict is unresolved, the SEC archive is blocked and no issuer excerpt was validated, the issuer site returned 403, or the HKEX filing list was not fetched. A 403 is not retried.
 
-0700.HK: the Tencent investor results page and its first results PDF. The PDF text includes the 12 August 2026 release. HKEX's title-search page did not list documents, so that section stays missing. Options and social posts are not collected. `--operator-feed` copies a parent file and labels it as not fetched here.
+BABA keeps the results-card date, the event date, the press-release dateline, and the SEC acceptance time as different fields. The press-release document is selected. The presentation deck is recorded and not substituted when the press release is missing. A card with no file is not a report. If its event date is still after `decision_at`, it is `FUTURE_NOT_REPORTED`.
 
-Not done: the options fallback pinned to 2026-11-13 (that source text was not in the runner excerpt, so it was not patched), same-day report overwrite inside the runner, and coverage beyond these three companies.
+LI reads the IR homepage and at most six same-origin results or news links. HTML pages count. A 403 is disclosed.
+
+0700.HK reads the current Tencent results and financial-reports pages. The PDF dateline and the HKEX listing time are both printed when the title search returns them. A dateline alone is not an HKEX filing time. Options and social posts are not collected. `--operator-feed` copies a parent file and labels it as not collected here.
+
+Before a graph launch, print the inventory with no model call:
+
+```bash
+python integrations/external_runner/accept_inventory.py \
+  --price-date 2026-11-16 --decision-at 2026-11-17T21:00:00Z \
+  --root /tmp/acquire-accept
+```
+
+The sentiment-loader patch and the options-block patch are separate and are not changed by this collector. Same-day report overwrite inside the untouched runner is still not done; the launcher only copies the existing report directory and framework log aside.

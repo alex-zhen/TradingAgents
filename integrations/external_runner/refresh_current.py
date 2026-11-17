@@ -1,7 +1,8 @@
 """Preflight for the existing runner. Does not rewrite that runner.
 
---runner refuses to start unless this acquisition extracted a fresh official
-document and that file is the one installed for the runner. Historical mode
+--runner refuses to start unless this acquisition validated official content
+and left no unresolved discovery conflict, and that file is the one installed.
+HTTP success alone does not install. Historical mode
 does not fetch and does not start the runner. Existing digests, same-date
 report directories, and framework logs are copied aside and not deleted.
 """
@@ -87,7 +88,10 @@ def main(argv: list[str] | None = None) -> int:
     produced = result.run_dir / f"sentiment_digest_{args.ticker}_{args.price_date}.md"
     if args.runner or args.install_for_runner:
         if not result.fetched or not produced.is_file():
-            print("refusing: this acquisition has no fresh official extract", file=sys.stderr)
+            print(
+                "refusing: content was not validated or a discovery conflict is unresolved",
+                file=sys.stderr,
+            )
             return 4
         if args.digest is not None and args.digest.resolve() != produced.resolve() and args.digest.read_bytes() != produced.read_bytes():
             print("refusing: digest is not the file from this acquisition", file=sys.stderr)
