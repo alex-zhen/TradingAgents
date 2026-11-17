@@ -1,0 +1,20 @@
+--- a/run_ta.py
++++ b/run_ta.py
+@@ -3,12 +3,11 @@
+ import tradingagents.agents.tools as T
+ TICKER = sys.argv[1]; DATE = sys.argv[2] if len(sys.argv)>2 else '2026-11-13'
+ RUN = pathlib.Path('/workspace/tradingagents-runs')
+-sent_path = RUN / f"sentiment_digest_{TICKER}_2026-11-15.md"
+-if not sent_path.exists():
+-    # fall back to any digest for this ticker
+-    candidates = sorted(RUN.glob(f"sentiment_digest_{TICKER}_*.md"))
+-    sent_path = candidates[-1] if candidates else sent_path
+-sent = sent_path.read_text() if sent_path.exists() else ""
++sent_path = RUN / f"sentiment_digest_{TICKER}_{DATE}.md"
++sent = sent_path.read_text() if sent_path.exists() else (
++    f"MISSING sentiment_digest_{TICKER}_{DATE}.md in {RUN}. "
++    "No older file was substituted. This run did not fetch a replacement."
++)
+ # existing options/xueqiu hooks and cfg remain unchanged
+ sent_block = f"\n\nEXTRA CONTEXT\n{sent}\n"
+ _orig = T.route_to_vendor
