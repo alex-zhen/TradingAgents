@@ -37,6 +37,10 @@ ALLOW = {
     "www.sec.gov",
     "www.tencent.com",
     "static.www.tencent.com",
+    "www.alibabagroup.com",
+    "data.alibabagroup.com",
+    "ali-home-data.oss-cn-hangzhou.aliyuncs.com",
+    "ir.lixiang.com",
 }
 TIMEOUT = 20
 RETRIES = 2
@@ -338,6 +342,14 @@ def acquire_sec(client: Client, ticker: str, decision: datetime) -> tuple[str, l
                 excerpt, url, row = text, doc_url, candidate
         if blocked:
             missing.append("sec_archive_403")
+            ir_text, ir_covered, ir_missing, ir_fetches = (
+                acquire_alibaba_ir(client, decision) if ticker == "BABA" else acquire_li_ir(client, decision)
+            )
+            fetches.extend(ir_fetches)
+            covered.extend(ir_covered)
+            missing.extend(ir_missing)
+            if ir_text:
+                parts.append("issuer_ir_after_sec_403:\n" + ir_text)
         row = row or financial[0]
         parts.append(
             "form: " + str(row.get("form"))
@@ -385,20 +397,179 @@ def acquire_sec(client: Client, ticker: str, decision: datetime) -> tuple[str, l
     return "\n".join(parts), covered, missing, fetches
 
 
+def _us_date(text: str):
+    try:
+        return datetime.strptime(text, "%B %d, %Y").date()
+    except ValueError:
+        return None
+
+
+def _stated_date(text: str):
+    """A release dateline, not a period-end such as '30 June 2026'."""
+    dateline = re.search(r"Hong Kong,\s*(\d{1,2}\s+[A-Z][a-z]+\s+20\d{2})", text)
+    if dateline:
+        try:
+            parsed = datetime.strptime(dateline.group(1), "%d %B %Y").date()
+        except ValueError:
+            parsed = None
+        if parsed:
+            return parsed, dateline.group(1)
+    for match in re.finditer(r"([A-Z][a-z]+ \d{1,2}, 20\d{2})", text):
+        parsed = _us_date(match.group(1))
+        if parsed:
+            return parsed, match.group(1)
+    return None, ""
+
+
+def _alibaba_documents(page: str) -> list[dict]:
+    documents = []
+    for part in page.split('"documentPublishTimeLocal":"')[1:]:
+        published = part.split('"', 1)[0]
+        chunk = part.split('"documentPublishTimeLocal":"', 1)[0]
+        title_match = re.search(r'"documentTitle":"([^"]+)"', chunk)
+        if not title_match:
+            continue
+        urls = []
+        for url in re.findall(
+            r"https://(?:data\.alibabagroup\.com|ali-home-data\.oss-cn-hangzhou\.aliyuncs\.com)/[^\"\\ ]+\.pdf",
+            chunk,
+        ):
+            if url not in urls:
+                urls.append(url)
+        documents.append({
+            "published": published,
+            "date": _us_date(published),
+            "title": title_match.group(1),
+            "urls": urls,
+        })
+    return documents
+
+
+def _choose_pdf(urls: list[str]) -> str:
+    return sorted(urls, key=lambda url: (0 if url.lower().endswith("results.pdf") else 1, url))[0]
+
+
+def acquire_alibaba_ir(client: Client, decision: datetime) -> tuple[str, list[str], list[str], list[Fetch]]:
+    page_url = "https://www.alibabagroup.com/en-US/ir-financial-reports-quarterly-results"
+    page = client.get(page_url)
+    fetches = [page]
+    if page.status == 403:
+        return f"issuer_ir: 403 {page_url} not retried", [], ["issuer_ir_403"], fetches
+    if page.status != 200:
+        return f"issuer_ir: HTTP {page.status} {page_url}", [], ["issuer_ir_listing"], fetches
+    html_text = page.body.decode("utf-8", "replace")
+    documents = _alibaba_documents(html_text)
+    if not documents:
+        return f"listing: {page_url}\nNo dated results records in the page.", ["issuer_ir_listing"], ["issuer_ir_documents"], fetches
+    eligible = [doc for doc in documents if doc["date"] and doc["date"] <= decision.date() and doc["urls"]]
+    undated_or_empty = [doc for doc in documents if doc["date"] and doc["date"] <= decision.date() and not doc["urls"]]
+    future = [doc for doc in documents if doc["date"] and doc["date"] > decision.date()]
+    lines = [f"listing: {page_url}", "discovery: records parsed from the IR page fetched this run"]
+    for doc in undated_or_empty:
+        lines.append(f"no_file: {doc['title']} published {doc['published']}")
+    for doc in future:
+        lines.append(f"FUTURE_NOT_REPORTED: {doc['title']} dated {doc['published']}")
+    if not eligible:
+        return "\n".join(lines), ["issuer_ir_listing"], ["issuer_ir_excerpt"], fetches
+    chosen = max(eligible, key=lambda doc: doc["date"])
+    url = _choose_pdf(chosen["urls"])
+    pdf = client.get(url)
+    fetches.append(pdf)
+    lines.append(
+        f"title: {chosen['title']}\npublished: {chosen['published']}\nsource_url: {url}\n"
+        "identity: issuer results document selected as the latest listing entry with a file "
+        "on or before decision_at"
+    )
+    covered = ["issuer_ir_listing"]
+    missing = []
+    if pdf.status == 403:
+        missing.append("issuer_ir_pdf_403")
+        lines.append("pdf: 403 not retried")
+    elif pdf.status == 200:
+        text = _pdf_text(pdf.body)
+        if text:
+            covered.append("issuer_ir_excerpt")
+            lines.append("excerpt:\n" + text)
+        else:
+            missing.append("issuer_ir_pdf_text")
+    else:
+        missing.append("issuer_ir_pdf")
+    return "\n".join(lines), covered, missing, fetches
+
+
+def acquire_li_ir(client: Client, decision: datetime) -> tuple[str, list[str], list[str], list[Fetch]]:
+    del decision
+    page_url = "https://ir.lixiang.com/"
+    page = client.get(page_url)
+    if page.status == 403:
+        return f"issuer_ir: 403 {page_url} not retried", [], ["issuer_ir_403"], [page]
+    if page.status != 200:
+        return f"issuer_ir: HTTP {page.status} {page_url}", [], ["issuer_ir_listing"], [page]
+    html_text = page.body.decode("utf-8", "replace")
+    urls = []
+    for url in re.findall(r'href="([^"]+\.pdf)"', html_text, re.I):
+        if url.startswith("/"):
+            url = "https://ir.lixiang.com" + url
+        if url not in urls:
+            urls.append(url)
+    if not urls:
+        return f"listing: {page_url}\nNo PDF links in the fetched IR HTML.", ["issuer_ir_listing"], ["issuer_ir_documents"], [page]
+    # The listing order is the order the issuer page returned. Do not substitute a remembered filename.
+    chosen = urls[0]
+    pdf = client.get(chosen)
+    lines = [f"listing: {page_url}", f"source_url: {chosen}", "discovery: first PDF href on the IR page fetched this run"]
+    covered, missing = ["issuer_ir_listing"], []
+    if pdf.status == 200 and _pdf_text(pdf.body):
+        covered.append("issuer_ir_excerpt")
+        lines.append("excerpt:\n" + _pdf_text(pdf.body))
+    elif pdf.status == 403:
+        missing.append("issuer_ir_pdf_403")
+    else:
+        missing.append("issuer_ir_excerpt")
+    return "\n".join(lines), covered, missing, [page, pdf]
+
+
 def _pdf_text(body: bytes) -> str:
+    excerpt, _haystack = _pdf_parts(body)
+    return excerpt
+
+
+def _pdf_parts(body: bytes) -> tuple[str, str]:
     try:
         from pypdf import PdfReader
     except ImportError:
-        return ""
+        return "", ""
     import io
     try:
         reader = PdfReader(io.BytesIO(body))
     except Exception:
-        return ""
-    pages = []
-    for page in reader.pages[:2]:
-        pages.append(page.extract_text() or "")
-    return "\n".join(pages)[:3500]
+        return "", ""
+    pages = [page.extract_text() or "" for page in reader.pages[:8]]
+    full = "\n".join(pages)
+    return full[:1500], full
+
+
+def _tencent_documents(page: str, source: str) -> list[dict]:
+    found = []
+    seen = set()
+    for match in re.finditer(r'href="(https://[^"]+\.pdf)"[^>]*>(.*?)</a>', page, re.I | re.S):
+        url = match.group(1)
+        label = " ".join(re.sub(r"<[^>]+>", " ", match.group(2)).split())
+        pre = page[max(0, match.start() - 700):match.start()]
+        heads = re.findall(r"<h2[^>]*>(.*?)</h2>", pre, re.I | re.S)
+        title = " ".join(re.sub(r"<[^>]+>", " ", heads[-1]).split()) if heads else label
+        if url in seen:
+            continue
+        blob = f"{title} {label}".lower()
+        if source == "results" and "announces" in blob and "results" in blob:
+            kind = "results_announcement"
+        elif source == "financial_reports" and ("interim report" in blob or "annual report" in blob):
+            kind = "periodic_report"
+        else:
+            continue
+        seen.add(url)
+        found.append({"url": url, "title": title or label, "kind": kind})
+    return found
 
 
 def acquire_tencent(client: Client, decision: datetime) -> tuple[str, list[str], list[str], list[Fetch]]:
@@ -411,29 +582,64 @@ def acquire_tencent(client: Client, decision: datetime) -> tuple[str, list[str],
         return "", covered, missing, fetches
     covered.append("tencent_ir_results_page")
     html_text = page.body.decode("utf-8", "replace")
-    match = re.search(r'href="(https://www\.tencent\.com/[^"]+\.pdf)"', html_text)
-    if not match:
+    reports = client.get("https://www.tencent.com/investors/financial-reports/")
+    fetches.append(reports)
+    documents = _tencent_documents(html_text, "results")
+    if reports.status == 200:
+        covered.append("tencent_financial_reports_page")
+        documents.extend(_tencent_documents(reports.body.decode("utf-8", "replace"), "financial_reports"))
+    else:
+        missing.append("tencent_financial_reports")
+    # One announcement and one periodic report, in the order each listing returned them.
+    selected = []
+    for kind in ("results_announcement", "periodic_report"):
+        for doc in documents:
+            if doc["kind"] == kind:
+                selected.append(doc)
+                break
+    if not selected:
         missing.append("tencent_results_pdf")
-        return f"results_page: {page_url}\nNo results PDF link in the fetched HTML.", covered, missing, fetches
-    pdf_url = match.group(1)
-    pdf = client.get(pdf_url)
-    fetches.append(pdf)
-    month = re.search(r"/(\d{4})/(\d{2})/", pdf_url)
-    published = f"{month.group(1)}-{month.group(2)}" if month else "not stated"
+        return f"results_page: {page_url}\nNo results or periodic-report PDF in the fetched listings.", covered, missing, fetches
+    described = []
+    for doc in selected:
+        pdf = client.get(doc["url"])
+        fetches.append(pdf)
+        excerpt, haystack = _pdf_parts(pdf.body) if pdf.status == 200 else ("", "")
+        published, printed = _stated_date(haystack) if haystack else (None, "")
+        described.append({**doc, "text": excerpt, "published": published, "printed": printed, "status": pdf.status})
+    dated = [doc for doc in described if doc["published"] and doc["published"] <= decision.date()]
+    later = [doc for doc in described if doc["published"] and doc["published"] > decision.date()]
+    latest = None
+    if dated:
+        top = max(doc["published"] for doc in dated)
+        winners = [doc for doc in dated if doc["published"] == top]
+        latest = winners[0] if len(winners) == 1 else None
     parts = [
         f"results_page: {page_url}",
-        f"source_url: {pdf_url}",
-        f"publication: URL path month {published}; the results card did not state a calendar day",
-        "currency: the excerpt is quoted from the PDF; this collector does not convert units",
+        "financial_reports_page: https://www.tencent.com/investors/financial-reports/",
+        "discovery: documents taken from the listings fetched this run, not from a stored filename",
+        "later_than_decision: " + (", ".join(doc["title"] for doc in later) or "none"),
+        "latest_by_publication: " + (
+            latest["title"] if latest else "not a single later document; identities are listed separately"
+        ),
+        "currency: excerpts are quoted from the PDFs; this collector does not convert units",
     ]
-    if pdf.status == 200:
-        text = _pdf_text(pdf.body)
-        if text:
-            covered.append("tencent_results_excerpt")
-            parts.append("excerpt:\n" + text)
+    for doc in described:
+        mark = " latest_by_publication" if latest and doc["url"] == latest["url"] else ""
+        parts.append(
+            f"document: {doc['title']}\nkind: {doc['kind']}{mark}\nsource_url: {doc['url']}\n"
+            f"publication: {doc['printed'] or 'not stated in the first pages'}\n"
+            f"http_status: {doc['status']}"
+        )
+        if doc["text"]:
+            parts.append("excerpt:\n" + doc["text"][:1200])
+        elif doc["status"] == 403:
+            missing.append("tencent_pdf_403")
+            parts.append("excerpt: 403 not retried")
         else:
             missing.append("tencent_pdf_text")
-            parts.append("excerpt: PDF bytes were fetched but text was not extracted")
+    if any(doc["text"] for doc in described):
+        covered.append("tencent_results_excerpt")
     else:
         missing.append("tencent_results_pdf")
     # Recent IR news is a separate section. Dates are recorded only when the page states them.
@@ -535,7 +741,7 @@ def acquire(
         financial, covered, missing, fetches = acquire_sec(client, canonical, decision)
     for fetch in fetches:
         _save(run, fetch)
-    fetched = bool({"financial_excerpt", "tencent_results_excerpt"} & set(covered))
+    fetched = bool({"financial_excerpt", "tencent_results_excerpt", "issuer_ir_excerpt"} & set(covered))
     text = _markdown({
         "ticker": ticker, "price_date": price_date, "decision_at": decision.isoformat(),
         "fetched": fetched, "financial": financial, "covered": covered, "missing": missing,

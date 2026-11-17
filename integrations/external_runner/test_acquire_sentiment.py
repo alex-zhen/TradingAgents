@@ -209,9 +209,14 @@ def test_live_baba_li_and_tencent():
         assert manifest["fetched"] is result.fetched
         if host == "tencent.com":
             assert result.fetched is True
-            assert "https://www.tencent.com/wp-content/uploads/" in result.markdown
-        elif any(item.get("status") == 403 for item in manifest["sources"]):
-            assert result.fetched is False
+            assert "results_announcement" in result.markdown
+            assert "periodic_report" in result.markdown
+        elif any(item.get("status") == 403 and "/Archives/" in item.get("url", "") for item in manifest["sources"]):
+            if "issuer_ir_excerpt" in manifest["covered"]:
+                assert result.fetched is True
+                assert "alibabagroup.com" in result.markdown or "lixiang.com" in result.markdown
+            else:
+                assert result.fetched is False
         else:
             assert result.fetched is True
             assert "www.sec.gov/Archives" in result.markdown
