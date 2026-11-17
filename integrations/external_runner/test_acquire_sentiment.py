@@ -94,7 +94,7 @@ def _routes(late=True):
 def test_current_discovery_skips_filings_accepted_after_decision(tmp_path):
     session = Session(_routes())
     result = acq.acquire(
-        "BABA", "2026-11-16", "2026-11-17T14:00:00Z", "current", tmp_path, session=session,
+        "BABA", "2026-11-16", "2026-11-17T10:17:21Z", "current", tmp_path, session=session,
     )
     assert result.fetched is True
     assert "https://www.sec.gov/Archives/edgar/data/1577552/000000000026000001/ex99.htm" in result.markdown
@@ -117,7 +117,7 @@ def test_current_discovery_skips_filings_accepted_after_decision(tmp_path):
 def test_403_is_not_retried_and_does_not_invent_success(tmp_path):
     session = Session([("efts.sec.gov", Response(403, b"blocked"))])
     result = acq.acquire(
-        "LI", "2026-11-16", "2026-11-17T14:00:00Z", "current", tmp_path, session=session,
+        "LI", "2026-11-16", "2026-11-17T10:17:21Z", "current", tmp_path, session=session,
     )
     assert result.fetched is False
     assert session.urls.count(session.urls[0]) == 1
@@ -140,7 +140,7 @@ def test_historical_and_uncovered_do_not_fetch_or_replace_old_files(tmp_path):
     assert historical.fetched is False
     assert "does not fetch" in historical.markdown
     uncovered = acq.acquire(
-        "NVDA", "2026-11-16", "2026-11-17T14:00:00Z", "current", tmp_path, session=Session([]),
+        "NVDA", "2026-11-16", "2026-11-17T10:17:21Z", "current", tmp_path, session=Session([]),
     )
     assert uncovered.status == "not_covered"
     assert old.read_text(encoding="utf-8") == "OLD RESEARCH"
@@ -179,7 +179,7 @@ def test_install_backs_up_the_baseline(tmp_path, monkeypatch):
 def test_route_receives_collector_text(tmp_path):
     session = Session(_routes())
     result = acq.acquire(
-        "BABA", "2026-11-16", "2026-11-17T14:00:00Z", "current", tmp_path, session=session,
+        "BABA", "2026-11-16", "2026-11-17T10:17:21Z", "current", tmp_path, session=session,
     )
     from tradingagents.dataflows.config import run_config
     from tradingagents.dataflows.router import VENDOR_METHODS, route_to_vendor
@@ -210,7 +210,7 @@ def test_disclaimer_does_not_validate(tmp_path, monkeypatch):
         lambda raw, limit=3500: "Disclaimer. Forward-looking statements. This presentation is not a report.",
     )
     result = acq.acquire(
-        "BABA", "2026-11-16", "2026-11-17T14:00:00Z", "current", tmp_path, session=session,
+        "BABA", "2026-11-16", "2026-11-17T10:17:21Z", "current", tmp_path, session=session,
     )
     manifest = json.loads((result.run_dir / "audit_manifest.json").read_text())
     assert manifest["content_validated"] is False
@@ -253,7 +253,7 @@ def test_li_html_results_page_is_accepted(tmp_path):
         ("ir.lixiang.com/", Response(200, home)),
         ("companyfacts", Response(200, b'{"facts":{}}')),
     ]
-    result = acq.acquire("LI", "2026-11-16", "2026-11-17T14:00:00Z", "current", tmp_path, session=Session(routes))
+    result = acq.acquire("LI", "2026-11-16", "2026-11-17T10:17:21Z", "current", tmp_path, session=Session(routes))
     assert "https://ir.lixiang.com/news/earnings" in result.markdown
     assert "Revenue was RMB100 million" in result.markdown
     manifest = json.loads((result.run_dir / "audit_manifest.json").read_text())
@@ -285,7 +285,7 @@ def test_fileless_past_card_is_a_conflict(tmp_path):
         ("ir-news-filings", Response(200, "")),
         ("companyfacts", Response(200, b'{"facts":{}}')),
     ]
-    result = acq.acquire("BABA", "2026-11-16", "2026-11-17T14:00:00Z", "current", tmp_path, session=Session(routes))
+    result = acq.acquire("BABA", "2026-11-16", "2026-11-17T10:17:21Z", "current", tmp_path, session=Session(routes))
     assert "conflict:" in result.markdown
     assert "not a report" in result.markdown
     manifest = json.loads((result.run_dir / "audit_manifest.json").read_text())
@@ -330,7 +330,7 @@ def test_card_date_is_not_the_publication_dateline(tmp_path, monkeypatch):
         ("companyfacts", Response(200, b'{"facts":{}}')),
     ]
     monkeypatch.setattr(acq, "_pdf_parts", lambda body: (press, press))
-    result = acq.acquire("BABA", "2026-11-16", "2026-11-17T14:00:00Z", "current", tmp_path, session=Session(routes))
+    result = acq.acquire("BABA", "2026-11-16", "2026-11-17T10:17:21Z", "current", tmp_path, session=Session(routes))
     assert "publication_dateline: August 20, 2026" in result.markdown
     assert "results_card_date: August 27, 2026" in result.markdown
     assert "event_date: August 20, 2026" in result.markdown
@@ -380,7 +380,7 @@ def test_newer_unread_sec_row_blocks_install(tmp_path, monkeypatch):
         ("companyfacts", Response(200, b'{"facts":{}}')),
     ]
     monkeypatch.setattr(acq, "_pdf_parts", lambda body: (press, press))
-    result = acq.acquire("BABA", "2026-11-16", "2026-11-17T14:00:00Z", "current", tmp_path, session=Session(routes))
+    result = acq.acquire("BABA", "2026-11-16", "2026-11-17T10:17:21Z", "current", tmp_path, session=Session(routes))
     manifest = json.loads((result.run_dir / "audit_manifest.json").read_text())
     assert manifest["content_validated"] is True
     assert manifest["fetch_succeeded"] is True
@@ -423,7 +423,7 @@ def test_tencent_dateline_and_hkex_listing_stay_separate(tmp_path, monkeypatch):
         ("investor-news", Response(200, "no dates")),
     ]
     monkeypatch.setattr(acq, "_pdf_parts", parts)
-    result = acq.acquire("0700.HK", "2026-11-16", "2026-11-17T21:00:00Z", "current", tmp_path, session=Session(routes))
+    result = acq.acquire("0700.HK", "2026-11-17", "2026-11-17T10:17:21Z", "current", tmp_path, session=Session(routes))
     assert "publication_dateline: 12 August 2026" in result.markdown
     assert "hkex_listing_datetime: 12/08/2026 16:31" in result.markdown
     assert "hkex_listing_datetime: 25/08/2026 16:53" in result.markdown
@@ -447,7 +447,7 @@ def test_inventory_prints_gates_without_launching_the_graph(tmp_path, monkeypatc
     monkeypatch.setattr(accept_inventory, "acquire", wrapped)
     del session
     code = accept_inventory.main([
-        "--price-date", "2026-11-16", "--decision-at", "2026-11-17T14:00:00Z",
+        "--price-date", "2026-11-16", "--decision-at", "2026-11-17T10:17:21Z",
         "--root", str(tmp_path), "--tickers", "BABA",
     ])
     captured = capsys.readouterr()

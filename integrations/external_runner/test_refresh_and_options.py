@@ -24,11 +24,11 @@ def test_failed_fetch_does_not_start_the_runner(tmp_path, monkeypatch):
     run.mkdir(parents=True)
 
     def failed(*args, **kwargs):
-        return Result("BABA", "BABA", "2026-11-16", "2026-11-17T14:00:00+00:00", False, False, "partial_or_failed", "MISSING", run)
+        return Result("BABA", "BABA", "2026-11-16", "2026-11-17T10:17:21+00:00", False, False, "partial_or_failed", "MISSING", run)
 
     monkeypatch.setattr(refresh_current, "acquire", failed)
     code = refresh_current.main([
-        "BABA", "2026-11-16", "--decision-at", "2026-11-17T14:00:00Z",
+        "BABA", "2026-11-16", "--decision-at", "2026-11-17T10:17:21Z",
         "--refresh-current", "--runner", str(runner), "--root", str(tmp_path),
     ])
     assert code == 4
@@ -61,11 +61,11 @@ def test_runner_receives_this_acquisition_and_keeps_prior_outputs(tmp_path, monk
     )
 
     def ok(*args, **kwargs):
-        return Result("BABA", "BABA", "2026-11-16", "2026-11-17T14:00:00+00:00", True, True, "fetched", fresh, run)
+        return Result("BABA", "BABA", "2026-11-16", "2026-11-17T10:17:21+00:00", True, True, "fetched", fresh, run)
 
     monkeypatch.setattr(refresh_current, "acquire", ok)
     code = refresh_current.main([
-        "BABA", "2026-11-16", "--decision-at", "2026-11-17T14:00:00Z",
+        "BABA", "2026-11-16", "--decision-at", "2026-11-17T10:17:21Z",
         "--refresh-current", "--runner", str(runner), "--root", str(tmp_path),
     ])
     assert code == 0
