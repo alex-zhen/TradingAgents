@@ -15,8 +15,9 @@ import json
 import os
 import uuid
 from collections.abc import Iterable
+from contextlib import contextmanager
 from dataclasses import dataclass
-from datetime import UTC, date, datetime, timedelta
+from datetime import UTC, date, datetime, time, timedelta
 from pathlib import Path
 from typing import Any
 from zoneinfo import ZoneInfo
@@ -545,6 +546,7 @@ def prepare_run(
     config_path: str | Path | None = None,
     holidays: Iterable[date] | None = None,
     news_stale_after: timedelta = NEWS_STALE_AFTER,
+    acquisition: dict[str, Any] | None = None,
 ) -> PreparedRun:
     """Select eligible files and write a new run directory. Sources are only read."""
     if mode not in {"current", "historical"}:
@@ -606,6 +608,14 @@ def prepare_run(
         "unreadable": issues,
         "warnings": warnings,
         "freshness_prerequisite": prerequisite,
+        "acquisition": acquisition or {
+            "producers_invoked": [],
+            "automatic_latest": False,
+            "detail": (
+                "No producer ran. A file that was already in the corpus is a "
+                "point-in-time candidate, not a refresh of the official source."
+            ),
+        },
         "config": _config_note(None if config_path is None else Path(config_path)),
     }
     encoded = json.dumps(manifest_body, sort_keys=True, ensure_ascii=False).encode()
@@ -737,3 +747,271 @@ def retained_runs(runs_dir: Path) -> list[Path]:
         path for path in runs_dir.iterdir()
         if path.is_dir() and not path.name.endswith(".partial")
     )
+
+
+def cutoff_from_cli_date(value: str, market: str, now: datetime | None = None) -> datetime:
+    """Turn positional DATE into a decision cutoff. A date-only value ends that
+    market day, and never later than ``now``. An explicit timestamp is kept.
+    """
+    text = str(value).strip()
+    if "T" in text:
+        return parse_decision_at(text)
+    clock = (now or datetime.now(UTC)).astimezone(UTC)
+    day = datetime.strptime(text, "%Y-%m-%d").date()
+    end = datetime.combine(day, time(23, 59, 59), tzinfo=_SESSION[market]["tz"]).astimezone(UTC)
+    return min(end, clock)
+
+
+@dataclass(frozen=True)
+class SentimentChoice:
+    path: Path | None
+    reason: str
+    price_as_of: date
+    decision_at: datetime
+    rejected_frozen_name: bool
+
+
+def select_sentiment_digest(
+    run_dir: Path,
+    ticker: str,
+    decision_at: str,
+    *,
+    now: datetime | None = None,
+) -> SentimentChoice:
+    """Choose a sentiment digest by publication and capture time.
+
+    The filename ``sentiment_digest_{ticker}_2026-11-15.md`` is not preferred,
+    and filename sort is not a fallback. ``decision_at`` is the cutoff.
+    ``price_as_of`` is reported separately and does not filter the file.
+    """
+    inst = resolve_instrument(ticker)
+    cutoff = cutoff_from_cli_date(str(decision_at), inst.market, now=now)
+    root = Path(run_dir)
+    frozen_name = f"sentiment_digest_{ticker}_2026-11-15.md"
+    paths = sorted(root.glob(f"sentiment_digest_{ticker}_*.md"))
+    paths += sorted(root.glob(f"sentiment_digest_{ticker}_*.json"))
+    eligible: list[Record] = []
+    saw_frozen = False
+    for path in paths:
+        if path.name == frozen_name:
+            saw_frozen = True
+        try:
+            record = load_record(path, root)
+        except (OSError, UnicodeError, ValueError, json.JSONDecodeError, KeyError):
+            continue
+        if record.kind not in {"sentiment", "news"}:
+            continue
+        if _matches(record, inst) is not None:
+            continue
+        if _timing_rejection(record, cutoff, inst.market) is not None:
+            continue
+        eligible.append(record)
+    price_as_of = last_completed_session(inst.market, cutoff)
+    if not eligible:
+        return SentimentChoice(None, "no_eligible_no_filename_fallback", price_as_of, cutoff, saw_frozen)
+    best = max(eligible, key=_rank)
+    reason = "metadata"
+    if Path(best.path).name == frozen_name:
+        reason = "metadata_not_filename"
+    return SentimentChoice(Path(best.path), reason, price_as_of, cutoff, saw_frozen and reason != "metadata_not_filename")
+
+
+PRODUCER_CONTRACT = (
+    {
+        "name": "options_digest",
+        "script": "options_digest.py",
+        "kinds": ("sentiment", "news"),
+        "fetches_paid_apis": False,
+    },
+    {
+        "name": "xueqiu_digest",
+        "script": "xueqiu_digest.py",
+        "kinds": ("sentiment", "news"),
+        "fetches_paid_apis": False,
+    },
+    {
+        "name": "official_extract",
+        "script": "official extract writer already used beside run_ta.py",
+        "kinds": ("financial_extract", "official_ir", "hkex_summary"),
+        "fetches_paid_apis": False,
+    },
+)
+
+
+def preflight_acquire(
+    *,
+    symbol: str,
+    market: str | None,
+    decision_at: str | datetime,
+    mode: str,
+    corpus: str | Path,
+    runs_dir: str | Path,
+    producers: dict[str, Any] | None = None,
+    **kwargs: Any,
+) -> PreparedRun:
+    """Ask the wrapper's existing producers to write files, then select.
+
+    ``producers`` maps a contract name to a callable ``fn(symbol, decision_at, corpus)``.
+    Historical mode does not call them. Current mode is ``automatic_latest`` only
+    when ``official_extract`` actually ran and an official file was then eligible.
+    This function does not call a network API.
+    """
+    if mode not in {"current", "historical"}:
+        raise ValueError("mode must be current or historical")
+    invoked: list[str] = []
+    if mode == "current":
+        for spec in PRODUCER_CONTRACT:
+            fn = (producers or {}).get(spec["name"])
+            if fn is None:
+                continue
+            fn(symbol=symbol, decision_at=decision_at, corpus=Path(corpus))
+            invoked.append(spec["name"])
+    inst = resolve_instrument(symbol, market)
+    cutoff = parse_decision_at(decision_at) if not isinstance(decision_at, datetime) else parse_decision_at(decision_at)
+    records, _issues = scan_corpus(Path(corpus))
+    chosen = select_records(records, inst, cutoff)
+    official = [
+        item for item in chosen
+        if item.kind in {"financial_extract", "official_ir", "hkex_summary"} and item.status != "missing"
+    ]
+    acquisition = _acquisition(mode, invoked)
+    acquisition["official_selected"] = bool(official)
+    acquisition["automatic_latest"] = mode == "current" and "official_extract" in invoked and bool(official)
+    return prepare_run(
+        symbol=symbol,
+        market=market,
+        decision_at=decision_at,
+        mode=mode,
+        corpus=corpus,
+        runs_dir=runs_dir,
+        acquisition=acquisition,
+        **kwargs,
+    )
+
+
+def _acquisition(mode: str, invoked: list[str]) -> dict[str, Any]:
+    return {
+        "producers_invoked": list(invoked),
+        "producers_not_supplied": [
+            spec["name"] for spec in PRODUCER_CONTRACT if spec["name"] not in invoked
+        ],
+        "contract": list(PRODUCER_CONTRACT),
+        "automatic_latest": False,
+        "detail": (
+            "historical mode does not refresh producers; eligibility is the cutoff"
+            if mode == "historical"
+            else "automatic_latest requires the official_extract producer to run in this preflight and leave an eligible file"
+        ),
+    }
+
+
+def serve_official_extract(prepared: PreparedRun, method: str, ticker: str, as_of_date: str | None) -> str:
+    """Text the official_extract vendor returns through route_to_vendor."""
+    inst = resolve_instrument(ticker)
+    if inst.canonical != prepared.canonical:
+        return (
+            f"OFFICIAL_EXTRACT_LISTING_MISMATCH: route asked for {inst.canonical} "
+            f"but this bundle is {prepared.canonical}."
+        )
+    acquisition = prepared.manifest.get("acquisition") or {}
+    kind = "news" if method == "get_news" else "official_ir"
+    category = next(item for item in prepared.manifest["categories"] if item["kind"] == kind)
+    if category["status"] == "missing" and kind == "official_ir":
+        category = next(item for item in prepared.manifest["categories"] if item["kind"] == "financial_extract")
+        kind = "financial_extract"
+    if prepared.mode == "current" and not acquisition.get("automatic_latest"):
+        return (
+            "OFFICIAL_EXTRACT_NOT_REFRESHED: the official_extract producer did not run "
+            f"for {prepared.canonical} at {prepared.decision_at.isoformat()}. "
+            f"price_last_completed_session={prepared.price_as_of.isoformat()}. "
+            "A preexisting file is not served as the latest official source."
+        )
+    selected = category.get("selected")
+    if not selected:
+        return (
+            f"OFFICIAL_EXTRACT_MISSING: no eligible {kind} for {prepared.canonical} "
+            f"at {prepared.decision_at.isoformat()}."
+        )
+    header = [
+        "OFFICIAL_EXTRACT",
+        f"method: {method}",
+        f"source_url: {selected['source_url']}",
+        f"currency: {selected['currency']}",
+        f"unit: {selected['unit']}",
+        f"period_end: {selected.get('period_end') or ''}",
+        f"published_at: {selected['published_at']}",
+        f"available_at: {selected['available_at']}",
+        f"captured_at: {selected['captured_at']}",
+        f"provenance: {selected['provenance']}",
+        f"sha256: {selected['sha256']}",
+        f"decision_at: {prepared.decision_at.isoformat()}",
+        f"price_last_completed_session: {prepared.price_as_of.isoformat()}",
+        f"framework_as_of_argument: {as_of_date or ''}",
+        "The official source is source_url. This text is the stored extract.",
+    ]
+    body = ""
+    snapshot = next(prepared.run_dir.joinpath("inputs").glob(f"{selected['sha256'][:12]}_*"), None)
+    if snapshot is not None:
+        body = _record_body(snapshot)
+    return "\n".join(header) + "\n" + body
+
+
+def _record_body(path: Path) -> str:
+    text = path.read_text(encoding="utf-8")
+    if path.suffix == ".json":
+        data = json.loads(text)
+        return str(data.get("body") or "")
+    marker = "<!-- research-record\n"
+    if text.startswith(marker):
+        end = text.find("\n-->\n")
+        if end >= 0:
+            return text[end + len("\n-->\n"):]
+    return text
+
+
+@contextmanager
+def official_extract_vendor(prepared: PreparedRun):
+    """Register ``official_extract`` on the real vendor table for this block.
+
+    ``route_to_vendor`` looks up ``VENDOR_METHODS`` when it is called, so the
+    analyst tools' existing import of ``route_to_vendor`` dispatches here.
+    """
+    from tradingagents.dataflows import router
+
+    def fundamentals(ticker, as_of_date=None, *args, **kwargs):
+        return serve_official_extract(prepared, "get_fundamentals", ticker, as_of_date)
+
+    def statement(ticker, freq="quarterly", as_of_date=None, *args, **kwargs):
+        return serve_official_extract(prepared, "get_income_statement", ticker, as_of_date)
+
+    def news(ticker, start_date, end_date, *args, **kwargs):
+        return serve_official_extract(prepared, "get_news", ticker, end_date)
+
+    mapping = {
+        "get_fundamentals": fundamentals,
+        "get_balance_sheet": statement,
+        "get_cashflow": statement,
+        "get_income_statement": statement,
+        "get_news": news,
+    }
+    previous = {method: router.VENDOR_METHODS[method].get("official_extract") for method in mapping}
+    for method, fn in mapping.items():
+        router.VENDOR_METHODS[method]["official_extract"] = fn
+    try:
+        yield
+    finally:
+        for method, fn in previous.items():
+            if fn is None:
+                router.VENDOR_METHODS[method].pop("official_extract", None)
+            else:
+                router.VENDOR_METHODS[method]["official_extract"] = fn
+
+
+def vendor_config() -> dict[str, Any]:
+    """Config slice that sends fundamentals and news to the official extract vendor."""
+    return {
+        "data_vendors": {
+            "fundamental_data": "official_extract",
+            "news_data": "official_extract",
+        }
+    }

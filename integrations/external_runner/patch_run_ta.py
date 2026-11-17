@@ -1,9 +1,14 @@
-"""Patch a local run_ta.py that still pins the BABA 2026-11-15 digest.
+"""Patch the live runner's frozen sentiment digest, and leave the rest alone.
 
-The parent's runner is not in this repository. This rewriter only accepts the
-recognized defect: an assignment of that digest path and a ``load_research``
-that returns it for every symbol. Any other file is refused so a partial edit
-cannot look applied.
+The recognized lines are::
+
+    sent_path = RUN / f"sentiment_digest_{TICKER}_2026-11-15.md"
+    if not sent_path.exists():
+        ... RUN.glob(... sentiment_digest_ ...)
+
+Positional ``TICKER`` / ``DATE``, options_digest, xueqiu_digest, and
+TradingAgentsGraph calls are not rewritten. A file without that assignment
+is refused.
 """
 
 from __future__ import annotations
@@ -13,33 +18,15 @@ import re
 import sys
 from pathlib import Path
 
-MARKER = "BABA_2026-11-15"
+MARKER = "sentiment_digest_{TICKER}_2026-11-15.md"
 
-_PATTERN = re.compile(
-    r"RESEARCH_DIGEST\s*=\s*Path\(\s*(?P<q>[\"'])[^\"']*BABA_2026-11-15\.md(?P=q)\s*\)\s*"
-    r"def load_research\(symbol,\s*as_of\):\n"
-    r"(?:[ \t]+.*\n)*?"
-    r"[ \t]+return RESEARCH_DIGEST\.read_text\([^\n]*\)\n?",
+_BLOCK = re.compile(
+    r"(?P<indent>[ \t]*)sent_path\s*=\s*RUN\s*/\s*f(?P<q>['\"])"
+    r"sentiment_digest_\{TICKER\}_2026-11-15\.md(?P=q)\s*\n"
+    r"(?:(?P=indent)if not sent_path\.exists\(\):\s*\n"
+    r"(?:(?P=indent)[ \t]+[^\n]*\n){1,8})?",
     re.M,
 )
-
-_REPLACEMENT = '''def load_research(symbol, as_of, mode="current", corpus=None, runs_dir=None):
-    """Select corpus files published and captured by ``as_of``.
-
-    ``as_of`` is a timezone-aware ISO-8601 timestamp. The filename is not used.
-    ``mode="historical"`` keeps the same strict cutoff; it does not mean "now".
-    """
-    prepared = prepare_run(
-        symbol=symbol,
-        market=None,
-        decision_at=as_of,
-        mode=mode,
-        corpus=corpus if corpus is not None else RUNS / "research_corpus",
-        runs_dir=runs_dir if runs_dir is not None else RUNS / "runs",
-        config_path=CONFIG,
-    )
-    return prepared.analyst_text
-'''
 
 
 class PatchError(RuntimeError):
@@ -49,31 +36,38 @@ class PatchError(RuntimeError):
 def patch_source(text: str) -> str:
     if MARKER not in text:
         raise PatchError(
-            "refusing to patch: hardcoded BABA_2026-11-15 digest marker not found. "
-            "Install integrations/external_runner/run_ta.py instead of editing in place."
+            "refusing to patch: sent_path assignment of "
+            "sentiment_digest_{TICKER}_2026-11-15.md was not found"
         )
-    updated, count = _PATTERN.subn(_REPLACEMENT, text, count=1)
-    if count != 1 or MARKER in updated:
+    match = _BLOCK.search(text)
+    if match is None:
         raise PatchError(
-            "refusing to patch: the digest marker is present but not the recognized "
-            "RESEARCH_DIGEST / load_research pattern. Install the maintained run_ta.py."
+            "refusing to patch: the 2026-11-15 digest is mentioned but not in the "
+            "sent_path = RUN / f'...' form"
         )
-    if "from research_ingest import prepare_run" not in updated:
-        updated = updated.replace(
-            "from pathlib import Path\n",
-            "from pathlib import Path\n\nfrom research_ingest import prepare_run\n",
-            1,
-        )
-    if "prepare_run(" not in updated:
-        raise PatchError("patch did not call prepare_run")
+    indent = match.group("indent")
+    replacement = (
+        f"{indent}_sentiment = select_sentiment_digest(RUN, TICKER, DATE)\n"
+        f"{indent}sent_path = _sentiment.path\n"
+    )
+    updated = text[:match.start()] + replacement + text[match.end():]
+    if MARKER in updated or ".glob(" in updated and "sentiment_digest_" in updated:
+        raise PatchError("patch left a sentiment_digest filename fallback in place")
+    if "from research_ingest import select_sentiment_digest" not in updated:
+        found = re.search(r"^(?:import |from )", updated, re.M)
+        line = "from research_ingest import select_sentiment_digest\n"
+        if found:
+            updated = updated[:found.start()] + line + updated[found.start():]
+        else:
+            updated = line + updated
     return updated
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description="Replace a hardcoded BABA digest loader.")
+    parser = argparse.ArgumentParser(description="Replace the frozen sentiment_digest_2026-11-15 assignment.")
     parser.add_argument("path", type=Path)
-    parser.add_argument("--in-place", action="store_true")
     parser.add_argument("--output", type=Path)
+    parser.add_argument("--in-place", action="store_true")
     args = parser.parse_args(argv)
     updated = patch_source(args.path.read_text(encoding="utf-8"))
     if args.in_place:

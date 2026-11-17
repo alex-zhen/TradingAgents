@@ -540,64 +540,41 @@ def test_concurrent_runs_do_not_share_directories(tmp_path):
 
 
 @pytest.mark.unit
-def test_runner_prepare_and_patch(tmp_path):
-    corpus, runs = tmp_path / "corpus", tmp_path / "runs"
-    corpus.mkdir()
-    _write(
-        corpus, "li.json",
-        symbol="LI", market="US", company="li_auto",
-        kind="official_ir",
-        source_url="https://example.invalid/li/ir",
-        body="LI_OFFICIAL_IR_FIXTURE",
-    )
-    config = tmp_path / "config.json"
-    config.write_text(json.dumps({
-        "analysts": ["fundamentals"],
-        "output_language": "English",
-        "api_key": "do-not-copy",
-    }), encoding="utf-8")
-    run_ta = _load("run_ta")
-    code = run_ta.main([
-        "--symbol", "LI",
-        "--market", "US",
-        "--decision-at", "2026-11-17T09:00:00-05:00",
-        "--mode", "current",
-        "--corpus", str(corpus),
-        "--runs-dir", str(runs),
-        "--config", str(config),
-        "--prepare-only",
-    ])
-    assert code == 0
-    saved = json.loads(next(runs.iterdir()).joinpath("input_manifest.json").read_text(encoding="utf-8"))
-    assert saved["config"]["config_allowlist"]["analysts"] == ["fundamentals"]
-    assert "api_key" not in json.dumps(saved["config"])
-    full = json.loads(next(runs.iterdir()).joinpath("full_state.json").read_text(encoding="utf-8"))
-    assert "LI_OFFICIAL_IR_FIXTURE" in full["messages"][1]["content"]
-
+def test_patch_preserves_positional_cli_and_selects_by_cutoff(tmp_path):
     patcher = _load("patch_run_ta")
-    fixture = (ROOT / "fixtures" / "defective_run_ta.py").read_text(encoding="utf-8")
-    patched = patcher.patch_source(fixture)
-    assert "BABA_2026-11-15" not in patched
-    assert "prepare_run(" in patched
+    original = (ROOT / "fixtures" / "defective_run_ta.py").read_text(encoding="utf-8")
+    patched = patcher.patch_source(original)
+    assert "sentiment_digest_{TICKER}_2026-11-15.md" not in patched
+    assert ".glob(" not in patched
+    assert "select_sentiment_digest(RUN, TICKER, DATE)" in patched
+    assert "argv[1], argv[2]" in patched
+    assert "options_digest.build(TICKER)" in patched
+    assert "xueqiu_digest.build(TICKER)" in patched
+    assert "from tradingagents.graph.trading_graph import TradingAgentsGraph" in patched
     with pytest.raises(patcher.PatchError):
-        patcher.patch_source("print('nothing to do')\n")
+        patcher.patch_source("print('no digest assignment')\n")
 
-    calls = {}
-
-    def fake_prepare(**kwargs):
-        calls.update(kwargs)
-        return type("P", (), {"analyst_text": "PATCHED_BUNDLE"})()
-
-    sys.modules["research_ingest"].prepare_run = fake_prepare
-    try:
-        namespace = {"__name__": "patched_fixture"}
-        exec(patched, namespace)
-        assert namespace["load_research"]("0700", "2026-11-17T17:00:00+08:00", mode="historical") == "PATCHED_BUNDLE"
-    finally:
-        sys.modules["research_ingest"].prepare_run = prepare_run
-    assert calls["symbol"] == "0700"
-    assert calls["mode"] == "historical"
-    assert calls["decision_at"] == "2026-11-17T17:00:00+08:00"
+    import types
+    sys.modules["options_digest"] = types.ModuleType("options_digest")
+    sys.modules["xueqiu_digest"] = types.ModuleType("xueqiu_digest")
+    run = tmp_path / "RUN"
+    run.mkdir()
+    (run / "sentiment_digest_LI_2026-11-15.md").write_text("FROZEN_LI", encoding="utf-8")
+    fresh = {
+        "symbol": "LI", "market": "US", "kind": "sentiment", "statement_scope": "item",
+        "unit": "item", "currency": "USD", "published_at": "2026-11-16T23:30:00Z",
+        "available_at": "2026-11-16T23:31:00Z", "captured_at": "2026-11-16T23:32:00Z",
+        "source_url": "https://example.invalid/li/digest", "provenance": "generated",
+        "generated": True, "original_urls": ["https://example.invalid/li/source"],
+        "body": "LI_FRESH_DIGEST",
+    }
+    (run / "sentiment_digest_LI_2026-11-16.json").write_text(json.dumps(fresh), encoding="utf-8")
+    namespace = {"__name__": "patched_fixture"}
+    exec(patched, namespace)
+    namespace["RUN"] = run
+    chosen = namespace["load_sentiment"]("LI", "2026-11-17")
+    assert chosen.name == "sentiment_digest_LI_2026-11-16.json"
+    assert (run / "sentiment_digest_LI_2026-11-15.md").read_text(encoding="utf-8") == "FROZEN_LI"
 
 
 @pytest.mark.unit
