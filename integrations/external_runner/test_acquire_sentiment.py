@@ -3,8 +3,11 @@
 from __future__ import annotations
 
 import json
+import os
 import sys
 from pathlib import Path
+
+os.environ.setdefault("SEC_EDGAR_USER_AGENT", "unit-test unit@example.com")
 
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
@@ -258,7 +261,9 @@ def test_li_html_results_page_is_accepted(tmp_path):
     assert "Revenue was RMB100 million" in result.markdown
     manifest = json.loads((result.run_dir / "audit_manifest.json").read_text())
     assert manifest["content_validated"] is True
-    assert manifest["install_allowed"] is True
+    assert manifest["fetch_succeeded"] is True
+    assert manifest["latest_discovery_verified"] is False
+    assert manifest["install_allowed"] is False
     assert "example.com" not in result.markdown
 
 
@@ -340,10 +345,13 @@ def test_card_date_is_not_the_publication_dateline(tmp_path, monkeypatch):
     assert "presentation_not_selected:" in result.markdown
     assert "FUTURE_NOT_REPORTED" in result.markdown
     assert "November 19, 2026" in result.markdown
-    assert "conflict:" not in result.markdown
+    assert "conflict: September" not in result.markdown
+    assert "SEC filing text was not read" in result.markdown
     manifest = json.loads((result.run_dir / "audit_manifest.json").read_text())
     assert manifest["content_validated"] is True
-    assert manifest["install_allowed"] is True
+    assert manifest["fetch_succeeded"] is True
+    assert manifest["latest_discovery_verified"] is False
+    assert manifest["install_allowed"] is False
     assert (result.run_dir / "extracted_full.txt").is_file()
 
 
@@ -458,6 +466,70 @@ def test_inventory_prints_gates_without_launching_the_graph(tmp_path, monkeypatc
     assert "runner_started: false" in captured.out
     assert "graph_launched: false" in captured.err
     assert "Revenue was RMB100 million" in captured.out
+
+
+def test_sec_skip_does_not_claim_latest_discovery(tmp_path, monkeypatch):
+    monkeypatch.delenv("SEC_EDGAR_USER_AGENT", raising=False)
+    cards = (
+        '{"eventDateLocal":"August 20, 2026","documentPublishTimeLocal":"August 27, 2026",'
+        '"documentTitle":"June Quarter 2026 Results","pressRelease":"99",'
+        '"urls":{"presentationUrl":"https://data.alibabagroup.com/files/deck.pdf"}}'
+    )
+    document = '<a href="https://data.alibabagroup.com/files/Announces-June.pdf">PDF</a>'
+    press = (
+        "Hong Kong, China, August 20, 2026\nAlibaba Group Announces June Quarter 2026 Results\n"
+        "quarter ended June 30, 2026\nRevenue was RMB100 million (US$15 million).\n"
+        "Net cash provided by operating activities was RMB10 million.\n"
+    )
+    routes = [
+        ("ir-financial-reports-quarterly-results", Response(200, cards)),
+        ("ir-news-filings", Response(200, "")),
+        ("document-99", Response(200, document)),
+        ("Announces-June.pdf", Response(200, b"%PDF-1.4")),
+    ]
+    session = Session(routes)
+    monkeypatch.setattr(acq, "_pdf_parts", lambda body: (press, press))
+    result = acq.acquire("BABA", "2026-11-16", "2026-11-17T10:17:21Z", "current", tmp_path, session=session)
+    assert not any("sec.gov" in url for url in session.urls)
+    assert "sec_skipped:" in result.markdown
+    assert "Filing coverage is unknown" in result.markdown
+    manifest = json.loads((result.run_dir / "audit_manifest.json").read_text())
+    assert manifest["content_validated"] is True
+    assert manifest["latest_discovery_verified"] is False
+    assert manifest["install_allowed"] is False
+    assert manifest["fetch_succeeded"] is True
+
+
+def test_inventory_rejects_one_price_date_for_many_listings(tmp_path, monkeypatch):
+    import accept_inventory
+
+    def explode(*args, **kwargs):
+        raise AssertionError("acquire was called")
+
+    monkeypatch.setattr(accept_inventory, "acquire", explode)
+    code = accept_inventory.main([
+        "--price-date", "2026-11-18",
+        "--decision-at", "2026-11-18T11:00:00Z",
+        "--root", str(tmp_path),
+        "--tickers", "BABA", "0700.HK",
+    ])
+    assert code == 2
+
+
+def test_inventory_rejects_a_future_decision(tmp_path, monkeypatch):
+    import accept_inventory
+
+    def explode(*args, **kwargs):
+        raise AssertionError("acquire was called")
+
+    monkeypatch.setattr(accept_inventory, "acquire", explode)
+    code = accept_inventory.main([
+        "--price-dates", "BABA=2026-11-17,0700.HK=2026-11-18",
+        "--decision-at", "2099-01-01T00:00:00Z",
+        "--root", str(tmp_path),
+        "--tickers", "BABA", "0700.HK",
+    ])
+    assert code == 2
 
 
 if __name__ == "__main__":

@@ -10,9 +10,10 @@ from __future__ import annotations
 import argparse
 import json
 import sys
+from datetime import UTC, datetime
 from pathlib import Path
 
-from acquire_sentiment import acquire
+from acquire_sentiment import acquire, parse_decision
 
 KEEP_PREFIXES = (
     "results_card_date:",
@@ -58,15 +59,46 @@ def _inventory(markdown: str) -> str:
     return "\n".join(kept)
 
 
+def _price_map(tickers: list[str], price_date: str, price_dates: str) -> dict[str, str] | str:
+    mapping: dict[str, str] = {}
+    if price_dates:
+        for part in price_dates.split(","):
+            if "=" not in part:
+                return "price-dates entries must be TICKER=YYYY-MM-DD"
+            ticker, day = part.split("=", 1)
+            mapping[ticker.strip()] = day.strip()
+    if len(tickers) > 1 and price_date and not price_dates:
+        return "one --price-date cannot cover multiple listings; pass --price-dates TICKER=YYYY-MM-DD,..."
+    if len(tickers) == 1 and price_date and not mapping:
+        mapping[tickers[0]] = price_date
+    missing = [ticker for ticker in tickers if ticker not in mapping]
+    if missing:
+        return "missing listing price date for " + ", ".join(missing)
+    return mapping
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Print a live official-source inventory. Does not start the graph.")
-    parser.add_argument("--price-date", required=True)
+    parser.add_argument("--price-date", default="", help="Only with a single ticker")
+    parser.add_argument("--price-dates", default="", help="TICKER=YYYY-MM-DD,TICKER=YYYY-MM-DD")
     parser.add_argument("--decision-at", required=True)
     parser.add_argument("--root", type=Path, default=Path("/tmp/acquire-accept"))
     parser.add_argument("--tickers", nargs="+", default=["BABA", "LI", "0700.HK"])
     args = parser.parse_args(argv)
+    try:
+        decision = parse_decision(args.decision_at)
+    except ValueError as exc:
+        print(exc, file=sys.stderr)
+        return 2
+    if decision > datetime.now(UTC):
+        print("refusing: decision-at is in the future", file=sys.stderr)
+        return 2
+    mapped = _price_map(args.tickers, args.price_date, args.price_dates)
+    if isinstance(mapped, str):
+        print(mapped, file=sys.stderr)
+        return 2
     for ticker in args.tickers:
-        result = acquire(ticker, args.price_date, args.decision_at, "current", args.root)
+        result = acquire(ticker, mapped[ticker], args.decision_at, "current", args.root)
         manifest_path = result.run_dir / "audit_manifest.json"
         manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
         print(f"ticker: {ticker}")

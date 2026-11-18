@@ -317,6 +317,14 @@ def _issuer_after_sec(client, ticker, decision, financial, covered, missing, fet
 
 
 def acquire_sec(client: Client, ticker: str, decision: datetime) -> tuple[str, list[str], list[str], list[Fetch]]:
+    if not _sec_ua_configured():
+        note = (
+            "sec_skipped: no compliant User-Agent configured; SEC was not queried. "
+            "Filing coverage is unknown."
+        )
+        return _issuer_after_sec(
+            client, ticker, decision, note, [], ["sec_skipped_no_user_agent"], [],
+        )
     query = "BABA" if ticker == "BABA" else '"Li Auto"'
     cik, search = _discover_cik(client, ticker, query, decision)
     fetches = [search]
@@ -927,34 +935,23 @@ def _markdown(result_bits: dict) -> str:
     return "\n".join(lines).rstrip() + "\n"
 
 
+def _sec_ua_configured() -> bool:
+    """A configured contact string. This does not invent an email."""
+    return "@" in os.getenv("SEC_EDGAR_USER_AGENT", "")
+
+
 def _newer_unread_filing(financial: str) -> str:
-    if "sec_filing: archive returned 403" not in financial:
+    if "sec_skipped:" in financial:
+        return "conflict: SEC was not queried; filing coverage is unknown"
+    if "sec_filing: archive returned 403" not in financial and "sec_archive_403" not in financial:
         return ""
     unread = re.search(r"newest_unread_acceptance: (\d{4}-\d{2}-\d{2})", financial)
-    dateline = re.search(
-        r"publication_dateline: ([A-Z][a-z]+ \d{1,2}, 20\d{2}|\d{1,2} [A-Z][a-z]+ 20\d{2})",
-        financial,
-    )
-    if not unread or not dateline:
+    if unread:
         return (
-            "conflict: SEC archive returned 403 and no publication dateline was available "
-            "to compare with the unread submissions row"
+            "conflict: SEC filing text was not read; newest unread acceptance "
+            f"{unread.group(1)}; filing coverage is unresolved"
         )
-    unread_date = datetime.strptime(unread.group(1), "%Y-%m-%d").date()
-    published = None
-    for fmt in ("%B %d, %Y", "%d %B %Y"):
-        try:
-            published = datetime.strptime(dateline.group(1), fmt).date()
-            break
-        except ValueError:
-            continue
-    if published and unread_date > published:
-        return (
-            "conflict: newest unread SEC acceptance "
-            f"{unread.group(1)} is after publication dateline {dateline.group(1)}; "
-            "filing text was not fetched"
-        )
-    return ""
+    return "conflict: SEC archive was not read; filing coverage is unresolved"
 
 
 def acquire(
@@ -1014,8 +1011,16 @@ def acquire(
     conflicts = [item for item in missing if str(item).startswith("conflict:")]
     content_validated, _lines = quality_gate(financial)
     fetch_succeeded = any(item.status == 200 and len(item.body) > 200 for item in fetches)
-    archive_blocked = "sec_archive_403" in missing and "issuer_ir_excerpt" not in covered
-    unresolved = bool(conflicts) or "hkex_filing_unknown" in missing or "issuer_ir_403" in missing or archive_blocked
+    sec_unknown = any(
+        item in missing
+        for item in (
+            "sec_skipped_no_user_agent",
+            "sec_archive_403",
+            "sec_cik_discovery",
+            "sec_submissions_index",
+        )
+    )
+    unresolved = bool(conflicts) or "hkex_filing_unknown" in missing or "issuer_ir_403" in missing or sec_unknown
     latest_ok = content_validated and not unresolved
     text = _markdown({
         "ticker": ticker, "price_date": price_date, "decision_at": decision.isoformat(),
