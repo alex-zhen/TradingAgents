@@ -1,0 +1,176 @@
+def _period_fields(digest: str) -> str:
+    import re as _re
+    explicit = [" ".join(item.split()) for item in _re.findall(r"(?m)^document_coverage:\s*(.+)$", digest or "")]
+    found = []
+    for item in explicit:
+        if item and item not in found:
+            found.append(item)
+    if not found:
+        pattern = _re.compile(
+            r"((?:fiscal years|fiscal year|three and nine months|nine months|six months|three months|quarter|period)"
+            r"[^\n]{0,80}?ended[^\n]{0,40}?\d{4})",
+            _re.I,
+        )
+        for match in pattern.finditer(digest or ""):
+            raw = " ".join(match.group(1).split())
+            if raw not in found:
+                found.append(raw)
+    if not found:
+        return "document_coverage: not stated\nmetric_period: unknown\n"
+    if len(found) == 1:
+        metric = found[0]
+    else:
+        metric = "unknown"
+    return "document_coverage: " + " | ".join(found) + "\nmetric_period: " + metric + "\n"
+
+
+def _labeled_availability(digest: str):
+    """A stated publication time or date. No clock is invented."""
+    import datetime as _dt
+    import re as _re
+    hk = _re.search(r"HKEX listing datetime[^0-9\n]{0,80}(\d{2}/\d{2}/\d{4} \d{2}:\d{2})", digest or "")
+    if not hk:
+        hk = _re.search(r"hkex_listing_datetime:\s*(\d{2}/\d{2}/\d{4} \d{2}:\d{2})", digest or "")
+    if hk:
+        moment = _dt.datetime.strptime(hk.group(1), "%d/%m/%Y %H:%M").replace(
+            tzinfo=_dt.timezone(_dt.timedelta(hours=8))
+        )
+        return ("timestamp", moment, "hkex")
+    dates = []
+    months = r"(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*\.?"
+    for line in (digest or "").splitlines():
+        low = line.lower()
+        filed = _re.search(r"filed/accepted\s+(\d{4}-\d{2}-\d{2})", line, _re.I)
+        if not filed and "filed" in low:
+            filed = _re.search(r"\bfiled\s+(\d{4}-\d{2}-\d{2})", line, _re.I)
+        if filed and any(token in low for token in ("filed", "accepted")):
+            dates.append(_dt.date.fromisoformat(filed.group(1)))
+            continue
+        if "dateline" not in low and "publication_dateline" not in low and "公告日期" not in line and "刊登日期" not in line:
+            continue
+        named = _re.search(months + r"\s+\d{1,2},\s+20\d{2}", line, _re.I)
+        if named:
+            raw = named.group(0).replace(".", "")
+            for fmt in ("%b %d, %Y", "%B %d, %Y"):
+                try:
+                    dates.append(_dt.datetime.strptime(raw, fmt).date())
+                    break
+                except ValueError:
+                    continue
+            continue
+        dmy = _re.search(r"\d{1,2}\s+[A-Z][a-z]+\s+20\d{2}", line)
+        if dmy:
+            try:
+                dates.append(_dt.datetime.strptime(dmy.group(0), "%d %B %Y").date())
+            except ValueError:
+                pass
+            continue
+        cjk = _re.search(r"(20\d{2})年(\d{1,2})月(\d{1,2})日", line)
+        if cjk:
+            dates.append(_dt.date(int(cjk.group(1)), int(cjk.group(2)), int(cjk.group(3))))
+    if not dates:
+        return ("missing", None, "")
+    return ("date", max(dates), "stated-date")
+
+
+def _discovery_lines(digest: str) -> str:
+    import re as _re
+    match = _re.search(r"latest_discovery_verified:\s*(true|false)", digest or "", _re.I)
+    stated = match.group(1).lower() if match else "not stated"
+    return (
+        "digest_latest_discovery_verified: " + stated + "\n"
+        "latest_discovery_verified: not established by this hook\n"
+    )
+
+
+def _official_fundamentals_block(digest: str, cutoff: str) -> str:
+    """Labelled official report for get_fundamentals. Plain markdown is accepted."""
+    import datetime as _dt
+    import re as _re
+    header = "\n\n=== OFFICIAL FUNDAMENTALS (labelled; not a vendor value) ===\n"
+    end = "\n=== END OFFICIAL FUNDAMENTALS ===\n"
+
+    def declared():
+        match = _re.search(r"decision_at:\s*(\S+)", digest or "")
+        return match.group(1) if match else ""
+
+    def missing(reason):
+        as_of = cutoff or declared() or "not declared"
+        return (
+            header
+            + f"as_of: {as_of}\ndigest_decision_at: {declared() or 'not declared'}\n"
+            + _discovery_lines(digest)
+            + "MISSING: " + reason + " Do not describe vendor output as the current official filing.\n"
+            + end
+        )
+
+    if not digest or digest.startswith("MISSING "):
+        return missing("no verified official financial report was loaded for this decision.")
+    kind, avail, source_kind = _labeled_availability(digest)
+    if kind == "missing":
+        return missing("publication availability is not stated. No HKEX or filing clock was invented.")
+    used = cutoff or declared()
+    if not used:
+        return missing("as-of is not declared in the digest and no explicit decision cutoff was supplied.")
+    text = used.strip()
+    if text.endswith("Z"):
+        text = text[:-1] + "+00:00"
+    try:
+        cut = _dt.datetime.fromisoformat(text)
+    except ValueError:
+        return missing("decision cutoff is not a timezone-aware timestamp.")
+    if cut.tzinfo is None:
+        return missing("decision cutoff has no timezone. No timestamp was invented.")
+    if kind == "timestamp":
+        if cut < avail:
+            return missing(
+                "official report availability " + avail.isoformat()
+                + " is after cutoff " + cut.isoformat() + ". The report is not included."
+            )
+        availability = "availability: " + avail.isoformat() + "\navailability_precision: timestamp\navailability_source: " + source_kind + "\n"
+    else:
+        if cut.date() <= avail:
+            return missing(
+                "publication date " + avail.isoformat()
+                + " is not before the cutoff date and no clock was stated. The report is not included."
+            )
+        availability = (
+            "availability: " + avail.isoformat() + "\n"
+            "availability_precision: date\n"
+            "availability_clock: not stated\n"
+            "availability_source: " + source_kind + "\n"
+        )
+    dateline = _re.search(
+        r"(?:publication_dateline:\s*|Hong Kong,\s*)(\d{1,2} [A-Z][a-z]+ \d{4}|[A-Z][a-z]+ \d{1,2}, \d{4})",
+        digest,
+    )
+    urls = _re.findall(r"https://[^\s)]+", digest)
+    source = next((item for item in urls if item.lower().endswith(".pdf") or "/Archives/" in item), urls[0] if urls else "")
+    body = ""
+    for title in ("## 3Q2026 official figures", "## Financial report"):
+        if title in digest:
+            body = digest.split(title, 1)[1].split("\n## ", 1)[0].strip()
+            break
+    if not body:
+        lines = [
+            line.strip() for line in digest.splitlines()
+            if _re.search(r"revenue|attributable|operating profit|net sales|source_url", line, _re.I) and _re.search(r"\d", line)
+        ]
+        body = "\n".join(lines[:12])
+    if not body or not _re.search(r"\d", body):
+        return missing("the digest has no official financial amounts.")
+    return (
+        header
+        + "as_of: " + (declared() or cut.isoformat()) + "\n"
+        + "digest_decision_at: " + (declared() or "not declared") + "\n"
+        + availability
+        + "publication_dateline: " + (dateline.group(1) if dateline else "not stated") + "\n"
+        + _period_fields(digest)
+        + _discovery_lines(digest)
+        + "source_url: " + source + "\n"
+        + "vendor_conflict: the vendor text above is not replaced. If it reports an earlier period, that vendor period is stale relative to this official report. Do not call the vendor period the latest official filing.\n"
+        + "body:\n" + body + "\n"
+        + end
+    )
+
+
