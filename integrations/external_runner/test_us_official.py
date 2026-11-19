@@ -16,7 +16,9 @@ LIVE_SHA = "6d2691173afd287dd9b69fcd0f77b4518089c81cd56e8eb595f21f51f6d7842a"
 RUNNER = HERE / "fixtures" / "run_ta_6d269117.py"
 NVDA = HERE / "fixtures" / "nvda_operator_2026-11-18.md"
 AAPL = HERE / "fixtures" / "aapl_operator_2026-11-17.md"
+XIAOMI = HERE / "fixtures" / "xiaomi_1810_operator_2026-11-18.md"
 META = """# Official material (operator-verified) — META
+document_coverage: three months and nine months ended September 30, 2026
 ticker: META
 decision_at: 2026-11-18T22:41:00.822725+08:00
 latest_discovery_verified: false
@@ -110,6 +112,74 @@ def test_nvda_meta_aapl_bodies_reach_fundamentals_without_an_hkex_clock():
     assert "64,601" not in leaked
     assert "not applicable" in leaked
     assert leaked.startswith("VENDOR_Q2")
+
+
+def test_xiaomi_dateline_is_not_the_period_end_and_not_the_url():
+    digest = XIAOMI.read_text(encoding="utf-8")
+    ns = _runner_namespace("1810.HK", digest)
+    block = ns["_official_fundamentals_block"]
+    before = block(digest, "2026-08-01T12:00:00+08:00")
+    same = block(digest, "2026-08-18T12:00:00+08:00")
+    nxt = block(digest, "2026-08-19T12:00:00+08:00")
+    for withheld in (before, same):
+        assert "108,921.6" not in withheld
+        assert "208,063.2" not in withheld
+        assert "availability: 2026-06-30" not in withheld
+        assert "MISSING:" in withheld
+    assert "108,921.6" in nxt
+    assert "208,063.2" in nxt
+    assert "availability: 2026-08-18" in nxt
+    assert "publication_dateline: August 18, 2026" in nxt
+    assert "availability: 2026-06-30" not in nxt
+    assert "availability_clock: not stated" in nxt
+    assert "metric_period: unknown" in nxt
+    assert "2026081801014" not in nxt.split("availability:", 1)[0]
+    leaked = ns["patched"]("get_fundamentals", "0700.HK")
+    assert "108,921.6" not in leaked
+    assert "not applicable" in leaked
+    ambiguous = """ticker: 1810.HK
+decision_at: 2026-11-18T12:00:00+08:00
+dateline August 18, 2026
+dateline September 2, 2026
+## Financial report
+Revenue 108,921.6
+"""
+    mixed = block(ambiguous, "2026-11-18T12:00:00+08:00")
+    assert "108,921.6" not in mixed
+    assert "disagree" in mixed
+    catl = """ticker: 300750.SZ
+decision_at: 2026-11-19T10:00:00+08:00
+董事会落款 2026年10月15日
+http://static.cninfo.com.cn/finalpage/2026-10-15/123.pdf
+## Financial report
+Revenue 100,000
+"""
+    absent = block(catl, "2026-11-19T10:00:00+08:00")
+    assert "100,000" not in absent
+    assert "MISSING:" in absent
+    assert "2026-10-15" not in absent
+    announced = """ticker: 300750.SZ
+decision_at: 2026-11-19T10:00:00+08:00
+公告日期：2026年10月20日
+## Financial report
+Revenue 50,000
+"""
+    early = block(announced, "2026-10-20T12:00:00+08:00")
+    later = block(announced, "2026-10-21T12:00:00+08:00")
+    assert "50,000" not in early
+    assert "50,000" in later
+    assert "availability: 2026-10-20" in later
+    assert "publication_dateline: 2026年10月20日" in later
+    assert "availability_clock: not stated" in later
+    ended_only = """ticker: 1810.HK
+decision_at: 2026-11-18T12:00:00+08:00
+dateline for the period ended June 30, 2026
+## Financial report
+Revenue 108,921.6
+"""
+    no_pub = block(ended_only, "2026-11-18T12:00:00+08:00")
+    assert "108,921.6" not in no_pub
+    assert "MISSING:" in no_pub
 
 
 def test_tencent_hkex_clock_still_blocks_an_earlier_cutoff():

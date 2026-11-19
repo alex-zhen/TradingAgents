@@ -7,7 +7,7 @@ def _period_fields(digest: str) -> str:
             found.append(item)
     if not found:
         pattern = _re.compile(
-            r"((?:fiscal years|fiscal year|three and nine months|nine months|six months|three months|quarter|period)"
+            r"((?:fiscal years|fiscal year|three and nine months|three and six months|nine months|six months|three months|quarter|period)"
             r"[^\n]{0,80}?ended[^\n]{0,40}?\d{4})",
             _re.I,
         )
@@ -17,60 +17,126 @@ def _period_fields(digest: str) -> str:
                 found.append(raw)
     if not found:
         return "document_coverage: not stated\nmetric_period: unknown\n"
-    if len(found) == 1:
+    coverage = " | ".join(found)
+    low = coverage.lower()
+    short = ("three months" in low) or ("quarter" in low)
+    long = ("six months" in low) or ("nine months" in low) or ("fiscal year" in low)
+    if len(found) == 1 and not (short and long):
         metric = found[0]
     else:
         metric = "unknown"
-    return "document_coverage: " + " | ".join(found) + "\nmetric_period: " + metric + "\n"
+    return "document_coverage: " + coverage + "\nmetric_period: " + metric + "\n"
+
+
+def _strip_urls(text: str) -> str:
+    import re as _re
+    return _re.sub(r"https?://\S+", " ", text or "")
+
+
+def _dates_in_segment(segment: str):
+    """Dates in a label's tail. Period-end dates are not publication dates."""
+    import datetime as _dt
+    import re as _re
+    segment = _strip_urls(segment)
+    found = []
+    patterns = (
+        (r"\d{4}-\d{2}-\d{2}", None),
+        (r"(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*\.?\s+\d{1,2},\s+20\d{2}", "mdy"),
+        (r"\d{1,2}\s+[A-Z][a-z]+\s+20\d{2}", "dmy"),
+        (r"20\d{2}年\d{1,2}月\d{1,2}日", "cjk"),
+    )
+    occupied = []
+    for pattern, kind in patterns:
+        for match in _re.finditer(pattern, segment, _re.I):
+            span = match.span()
+            if any(span[0] < end and span[1] > start for start, end in occupied):
+                continue
+            window = segment[max(0, span[0] - 24):span[0]].lower()
+            if "ended" in window or "ending" in window or "截至" in window:
+                continue
+            raw = " ".join(match.group(0).split())
+            parsed = None
+            if kind is None:
+                parsed = _dt.date.fromisoformat(raw)
+            elif kind == "mdy":
+                cleaned = raw.replace(".", "")
+                for fmt in ("%b %d, %Y", "%B %d, %Y"):
+                    try:
+                        parsed = _dt.datetime.strptime(cleaned, fmt).date()
+                        break
+                    except ValueError:
+                        continue
+            elif kind == "dmy":
+                try:
+                    parsed = _dt.datetime.strptime(raw, "%d %B %Y").date()
+                except ValueError:
+                    parsed = None
+            else:
+                parts = _re.match(r"(20\d{2})年(\d{1,2})月(\d{1,2})日", raw)
+                if parts:
+                    parsed = _dt.date(int(parts.group(1)), int(parts.group(2)), int(parts.group(3)))
+            if parsed is not None:
+                found.append((parsed, raw))
+                occupied.append(span)
+    return found
 
 
 def _labeled_availability(digest: str):
-    """A stated publication time or date. No clock is invented."""
+    """Publication time or date bound to an explicit label. No clock is invented."""
     import datetime as _dt
     import re as _re
-    hk = _re.search(r"HKEX listing datetime[^0-9\n]{0,80}(\d{2}/\d{2}/\d{4} \d{2}:\d{2})", digest or "")
-    if not hk:
-        hk = _re.search(r"hkex_listing_datetime:\s*(\d{2}/\d{2}/\d{4} \d{2}:\d{2})", digest or "")
-    if hk:
-        moment = _dt.datetime.strptime(hk.group(1), "%d/%m/%Y %H:%M").replace(
+    text = digest or ""
+    stamps = []
+    for match in _re.finditer(r"HKEX listing datetime", text, _re.I):
+        line_end = text.find("\n", match.end())
+        if line_end < 0:
+            line_end = len(text)
+        tail = _strip_urls(text[match.end():line_end])
+        clock = _re.search(r"\d{2}/\d{2}/\d{4} \d{2}:\d{2}", tail)
+        if not clock:
+            continue
+        raw = clock.group(0)
+        moment = _dt.datetime.strptime(raw, "%d/%m/%Y %H:%M").replace(
             tzinfo=_dt.timezone(_dt.timedelta(hours=8))
         )
-        return ("timestamp", moment, "hkex")
-    dates = []
-    months = r"(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*\.?"
-    for line in (digest or "").splitlines():
-        low = line.lower()
-        filed = _re.search(r"filed/accepted\s+(\d{4}-\d{2}-\d{2})", line, _re.I)
-        if not filed and "filed" in low:
-            filed = _re.search(r"\bfiled\s+(\d{4}-\d{2}-\d{2})", line, _re.I)
-        if filed and any(token in low for token in ("filed", "accepted")):
-            dates.append(_dt.date.fromisoformat(filed.group(1)))
+        stamps.append((moment, raw))
+    unique_stamps = []
+    for item in stamps:
+        if item[0] not in [have[0] for have in unique_stamps]:
+            unique_stamps.append(item)
+    if len(unique_stamps) > 1:
+        return ("ambiguous", None, "", "")
+    labeled = []
+    label = _re.compile(r"publication_dateline|dateline|filed/accepted|\bfiled\b|公告日期|刊登日期", _re.I)
+    for line in text.splitlines():
+        if _re.search(r"do not treat|not the current|not published|不是本期|尚未刊", line, _re.I):
             continue
-        if "dateline" not in low and "publication_dateline" not in low and "公告日期" not in line and "刊登日期" not in line:
-            continue
-        named = _re.search(months + r"\s+\d{1,2},\s+20\d{2}", line, _re.I)
-        if named:
-            raw = named.group(0).replace(".", "")
-            for fmt in ("%b %d, %Y", "%B %d, %Y"):
-                try:
-                    dates.append(_dt.datetime.strptime(raw, fmt).date())
-                    break
-                except ValueError:
-                    continue
-            continue
-        dmy = _re.search(r"\d{1,2}\s+[A-Z][a-z]+\s+20\d{2}", line)
-        if dmy:
-            try:
-                dates.append(_dt.datetime.strptime(dmy.group(0), "%d %B %Y").date())
-            except ValueError:
-                pass
-            continue
-        cjk = _re.search(r"(20\d{2})年(\d{1,2})月(\d{1,2})日", line)
-        if cjk:
-            dates.append(_dt.date(int(cjk.group(1)), int(cjk.group(2)), int(cjk.group(3))))
-    if not dates:
-        return ("missing", None, "")
-    return ("date", max(dates), "stated-date")
+        cursor = 0
+        while True:
+            found = label.search(line, cursor)
+            if not found:
+                break
+            nxt = label.search(line, found.end())
+            stop = nxt.start() if nxt else len(line)
+            for parsed, raw in _dates_in_segment(line[found.end():stop]):
+                labeled.append((parsed, raw, found.group(0).lower()))
+            cursor = found.end()
+    unique_dates = []
+    for parsed, raw, kind in labeled:
+        if parsed not in [have[0] for have in unique_dates]:
+            unique_dates.append((parsed, raw, kind))
+    if len(unique_stamps) == 1:
+        moment, raw = unique_stamps[0]
+        if any(item[0] != moment.date() for item in unique_dates):
+            return ("ambiguous", None, "", "")
+        return ("timestamp", moment, "hkex", raw)
+    if len(unique_dates) > 1:
+        return ("ambiguous", None, "", "")
+    if len(unique_dates) == 1:
+        parsed, raw, kind = unique_dates[0]
+        source = "filed" if "filed" in kind else ("announcement" if kind in {"公告日期", "刊登日期"} else "dateline")
+        return ("date", parsed, source, raw)
+    return ("missing", None, "", "")
 
 
 def _discovery_lines(digest: str) -> str:
@@ -106,9 +172,11 @@ def _official_fundamentals_block(digest: str, cutoff: str) -> str:
 
     if not digest or digest.startswith("MISSING "):
         return missing("no verified official financial report was loaded for this decision.")
-    kind, avail, source_kind = _labeled_availability(digest)
+    kind, avail, source_kind, raw = _labeled_availability(digest)
+    if kind == "ambiguous":
+        return missing("more than one publication date is labeled and they disagree. None was selected.")
     if kind == "missing":
-        return missing("publication availability is not stated. No HKEX or filing clock was invented.")
+        return missing("publication availability is not stated. No period-end, URL, or retrieval time was used.")
     used = cutoff or declared()
     if not used:
         return missing("as-of is not declared in the digest and no explicit decision cutoff was supplied.")
@@ -127,7 +195,12 @@ def _official_fundamentals_block(digest: str, cutoff: str) -> str:
                 "official report availability " + avail.isoformat()
                 + " is after cutoff " + cut.isoformat() + ". The report is not included."
             )
-        availability = "availability: " + avail.isoformat() + "\navailability_precision: timestamp\navailability_source: " + source_kind + "\n"
+        availability = (
+            "availability: " + avail.isoformat() + "\n"
+            "availability_precision: timestamp\n"
+            "availability_source: " + source_kind + "\n"
+            "publication_dateline: " + raw + "\n"
+        )
     else:
         if cut.date() <= avail:
             return missing(
@@ -139,11 +212,8 @@ def _official_fundamentals_block(digest: str, cutoff: str) -> str:
             "availability_precision: date\n"
             "availability_clock: not stated\n"
             "availability_source: " + source_kind + "\n"
+            "publication_dateline: " + raw + "\n"
         )
-    dateline = _re.search(
-        r"(?:publication_dateline:\s*|Hong Kong,\s*)(\d{1,2} [A-Z][a-z]+ \d{4}|[A-Z][a-z]+ \d{1,2}, \d{4})",
-        digest,
-    )
     urls = _re.findall(r"https://[^\s)]+", digest)
     source = next((item for item in urls if item.lower().endswith(".pdf") or "/Archives/" in item), urls[0] if urls else "")
     body = ""
@@ -164,7 +234,6 @@ def _official_fundamentals_block(digest: str, cutoff: str) -> str:
         + "as_of: " + (declared() or cut.isoformat()) + "\n"
         + "digest_decision_at: " + (declared() or "not declared") + "\n"
         + availability
-        + "publication_dateline: " + (dateline.group(1) if dateline else "not stated") + "\n"
         + _period_fields(digest)
         + _discovery_lines(digest)
         + "source_url: " + source + "\n"
