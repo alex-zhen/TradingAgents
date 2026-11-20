@@ -27,6 +27,8 @@ from datetime import date, datetime
 from pathlib import Path
 from urllib.parse import urlparse
 
+from sse_2026_calendar import classify_session, coverage_line
+
 SCHEMA = "tradingagents.cninfo_listing_evidence.v1"
 FUNDAMENTAL_METHODS = {"get_fundamentals", "get_balance_sheet", "get_cashflow", "get_income_statement"}
 SOURCE_LABELS = {"公告时间", "announcementTime"}
@@ -143,11 +145,6 @@ def _body_has_security(body: str, security: str) -> bool:
     if not code:
         return bool(security) and security in (body or "")
     return re.search(rf"证券代码\s*[：:]\s*{code}(?!\d)", body or "") is not None
-
-
-def _cash_session(day: date) -> bool:
-    """SSE and SZSE have no cash session on Saturday or Sunday."""
-    return day.weekday() < 5
 
 
 def _cutoff(value: str):
@@ -301,20 +298,16 @@ def load_cninfo_listing_evidence(
                 ["date-only publication is not used for a same-day decision"],
                 ["date_only_same_day"],
             )
-        if not _cash_session(cutoff.date()):
-            return _view(
-                "withheld",
-                [
-                    "decision date "
-                    + cutoff.date().isoformat()
-                    + " is after the publication date but is not an SSE or SZSE cash session. "
-                    + "Saturday and Sunday are not sessions, so the next calendar day is not enough."
-                ],
-                ["not_trading_session"],
-            )
+        status, detail = classify_session(cutoff.date())
+        if status == "holiday":
+            return _view("withheld", [detail], ["holiday"])
+        if status == "weekend":
+            return _view("withheld", [detail], ["not_trading_session"])
+        if status != "open":
+            return _view("withheld", [detail], ["calendar_unknown"])
         precision = "date"
         shown = published_date.isoformat()
-        session_note = "trading_session: weekday cash session"
+        session_note = "trading_session: open\n" + coverage_line()
     notice = re.search(r"公告编号\s*[：:]\s*([0-9]{4}-[0-9]{3})", body)
     in_body = announcement_id in body
     lines = [

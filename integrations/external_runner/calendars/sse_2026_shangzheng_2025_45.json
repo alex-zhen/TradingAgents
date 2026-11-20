@@ -1,0 +1,46 @@
+{
+  "calendar_id": "sse-shangzheng-2025-45",
+  "coverage_start": "2026-01-01",
+  "coverage_end": "2026-12-31",
+  "exchange_notice": {
+    "publisher": "上海证券交易所",
+    "document": "上证公告〔2025〕45号",
+    "title": "关于上海证券交易所2026年部分节假日休市安排的通知",
+    "published": "2025-12-22",
+    "url": "https://www.sse.com.cn/disclosure/announcement/general/c/c_20251222_10802507.shtml",
+    "read_on": "2026-11-20"
+  },
+  "state_council_notice": {
+    "publisher": "国务院办公厅",
+    "document": "国办发明电〔2025〕7号",
+    "title": "国务院办公厅关于2026年部分节假日安排的通知",
+    "published": "2025-11-04",
+    "url": "https://www.gov.cn/zhengce/zhengceku/202511/content_7047091.htm",
+    "read_on": "2026-11-20",
+    "use": "Identifies weekend days the government marks as 上班. Those days are not exchange sessions. The SSE notice lists them as 周末休市."
+  },
+  "szse_notice": {
+    "url": "http://www.szse.cn/disclosure/notice/general/t20260917_622911.html",
+    "read_on": "2026-11-20",
+    "retrieved": false,
+    "note": "One response began with the title 关于2026年中秋节、国庆节休 and later requests returned HTTP 502. The body was not saved. This calendar does not quote that page and does not treat it as a verified SZSE full-year transcript."
+  },
+  "rule": "Inside 2026, a date in a closure below is a holiday. Any other Saturday or Sunday is not a session, including a State Council makeup workday. Any other 2026 weekday is an ordinary session because the SSE notice says trading resumes after each listed holiday and names no other 2026 weekday closure. A date outside 2026 is unknown and is not admitted.",
+  "closures": [
+    {"name": "元旦", "start": "2026-01-01", "end": "2026-01-03", "excerpt": "元旦：1月1日（星期四）至1月3日（星期六）休市，1月5日（星期一）起照常开市。另外，1月4日（星期日）为周末休市。"},
+    {"name": "春节", "start": "2026-02-15", "end": "2026-02-23", "excerpt": "春节：2月15日（星期日）至2月23日（星期一）休市，2月24日（星期二）起照常开市。另外，2月14日（星期六）、2月28日（星期六）为周末休市。"},
+    {"name": "清明节", "start": "2026-04-04", "end": "2026-04-06", "excerpt": "清明节：4月4日（星期六）至4月6日（星期一）休市，4月7日（星期二）起照常开市。"},
+    {"name": "劳动节", "start": "2026-05-01", "end": "2026-05-05", "excerpt": "劳动节：5月1日（星期五）至5月5日（星期二）休市，5月6日（星期三）起照常开市。另外，5月9日（星期六）为周末休市。"},
+    {"name": "端午节", "start": "2026-06-19", "end": "2026-06-21", "excerpt": "端午节：6月19日（星期五）至6月21日（星期日）休市，6月22日（星期一）起照常开市。"},
+    {"name": "中秋节", "start": "2026-09-25", "end": "2026-09-27", "excerpt": "中秋节：9月25日（星期五）至9月27日（星期日）休市，9月28日（星期一）起照常开市。"},
+    {"name": "国庆节", "start": "2026-10-01", "end": "2026-10-07", "excerpt": "国庆节：10月1日（星期四）至10月7日（星期三）休市，10月8日（星期四）起照常开市。另外，9月20日（星期日）、10月10日（星期六）为周末休市。"}
+  ],
+  "state_council_weekend_workdays": [
+    "2026-01-04",
+    "2026-02-14",
+    "2026-02-28",
+    "2026-05-09",
+    "2026-09-20",
+    "2026-10-10"
+  ]
+}

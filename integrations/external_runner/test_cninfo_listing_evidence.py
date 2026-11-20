@@ -313,3 +313,31 @@ def test_staged_route_reads_real_filings_without_using_the_session_date(tmp_path
     missing = execute_staged(runner, CATL, "300750.SZ", "2026-10-22", "")
     assert "decision_at is missing. DATE was not used as the decision cutoff." in missing
     assert "165,220,844" not in missing
+
+
+CALENDAR_PROBE = HERE / "fixtures" / "synthetic_calendar_20260929.json"
+
+
+def test_official_2026_closures_and_unknown_dates_reach_the_calendar_branch():
+    from datetime import date
+
+    from sse_2026_calendar import classify_session
+    for day in (1, 2, 5, 6, 7):
+        assert classify_session(date(2026, 10, day))[0] == "holiday"
+    assert classify_session(date(2026, 10, 8))[0] == "open"
+    weekend_status, weekend_text = classify_session(date(2026, 10, 10))
+    assert weekend_status == "weekend" and "does not open the exchange" in weekend_text
+    assert classify_session(date(2027, 1, 1))[0] == "unknown"
+    opened = _shown(CALENDAR_PROBE, symbol="300750", decision="2026-09-30T15:00:00+08:00")
+    closed = _shown(CALENDAR_PROBE, symbol="300750", decision="2026-10-01T15:00:00+08:00")
+    assert "status: admitted" in opened and MARKER in opened
+    assert "calendar_id: sse-shangzheng-2025-45" in opened
+    assert "reason_code: holiday" in closed and MARKER not in closed
+    assert "announcement_id_not_in_url" not in closed and "cutoff_before_publication" not in closed
+    assert "国庆节" in closed
+    for path, symbol in ((CATL, "300750.SZ"), (MOUTAI, "600519.SH")):
+        view = _view(path, symbol=symbol, decision="2027-01-01T15:00:00+08:00")
+        assert view.status == "withheld"
+        assert view.codes == ["calendar_unknown"]
+        shown = _shown(path, symbol=symbol, decision="2027-01-01T15:00:00+08:00")
+        assert "165,220,844" not in shown and "40,267,482,684.56" not in shown

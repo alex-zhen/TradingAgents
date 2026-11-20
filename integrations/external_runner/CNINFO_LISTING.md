@@ -13,7 +13,7 @@ The record is admitted only when all of these correspond:
 - `content_sha256` is the SHA-256 of the body bytes. A sibling `pdf/<id>.PDF`, when present, must match `pdf_file_sha256`.
 - `publication.value` is the listing time, not a board signature, period end, `storageTime`, or URL date
 
-A calendar date, and a timestamp at 00:00:00 in any timezone, is date-only. It is included only on a later SSE/SZSE cash session. Saturday and Sunday are not cash sessions, so the next calendar day is not enough when that day is a weekend. A timezone-aware clock other than midnight is included when the decision cutoff is at or after that clock. A missing or naive `decision_at` is refused. The runner `DATE` is not a substitute.
+A calendar date, and a timestamp at 00:00:00 in any timezone, is date-only. It is included only on a later session inside the 2026 coverage of 上证公告〔2025〕45号. A date in that notice's closure list, including 2026-10-01 through 2026-10-07, is a holiday. Saturday and Sunday are not sessions, including a State Council weekend workday such as 2026-10-10. A date outside 2026-01-01/2026-12-31 is unknown and is not admitted. A timezone-aware clock other than midnight is included when the decision cutoff is at or after that clock. A missing or naive `decision_at` is refused. The runner `DATE` is not a substitute.
 
 `latest_discovery_verified` stays `not established by this evidence` when a body is shown.
 

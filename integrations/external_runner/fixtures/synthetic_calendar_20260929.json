@@ -1,0 +1,20 @@
+{
+  "schema": "tradingagents.cninfo_listing_evidence.v1",
+  "source": "cninfo",
+  "source_label": "公告时间",
+  "announcement_id": "SYN-CAL-300750-20260929",
+  "security_code": "300750",
+  "secName": "合成样本",
+  "report_period": "2026年9月30日",
+  "period_end": "2026-09-30",
+  "board_signature_date": "2026-09-20",
+  "pdf_url": "https://static.cninfo.com.cn/finalpage/2026-09-29/SYN-CAL-300750-20260929.PDF",
+  "publication": {
+    "value": "2026-09-29",
+    "raw": "公告时间：2026年9月29日"
+  },
+  "content_sha256": "1a53a799805f2a27322539a9a65963970bdc287f3bd577224fcca04e945ffffc",
+  "body": "证券代码：300750\n证券简称：合成样本\nreport_period: 2026 年 9 月 30 日\n公告时间：2026年9月29日\nRevenue 12,345 synthetic\n",
+  "synthetic": true,
+  "note": "Synthetic calendar probe. Not a filing. Publication 2026-09-29 so a 2026-10-01 cutoff reaches the holiday branch."
+}
