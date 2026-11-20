@@ -40,7 +40,14 @@ python3 PARENT_COPY/preflight_public_evidence.py \
   --expected-currency HKD
 ```
 
-Local check:
+The synthetic suite reads `us_official_funcs.txt` from the same directory as the test. That file is the official date-gate text, including the rule that `公告时间` is not a publication label. A clean extract also contains `tradingagents/agents/tools.py`, copied from `no_llm_tools.py`, so the suite does not import the checkout. From the unpacked directory, with `PARENT_COPY` replaced by that directory:
+
+```bash
+cd PARENT_COPY
+PYTHONPATH= python3 -m pytest test_public_market_evidence.py -q -p no:cacheprovider --noconftest --rootdir=PARENT_COPY
+```
+
+Repo check:
 
 ```bash
 python -m pytest integrations/external_runner/test_public_market_evidence.py -q -p no:cacheprovider
