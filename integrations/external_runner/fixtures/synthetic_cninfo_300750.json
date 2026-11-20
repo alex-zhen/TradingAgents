@@ -1,0 +1,19 @@
+{
+  "schema": "tradingagents.cninfo_listing_evidence.v1",
+  "source": "cninfo",
+  "source_label": "公告时间",
+  "announcement_id": "SYN-CNINFO-300750-20261020",
+  "security_code": "300750.SZ",
+  "report_period": "2026-09-30",
+  "period_end": "2026-09-30",
+  "board_signature_date": "2026-10-18",
+  "pdf_url": "https://static.cninfo.com.cn/finalpage/2026-08-01/SYN-CNINFO-300750-20261020.PDF",
+  "publication": {
+    "value": "2026-10-20",
+    "raw": "公告时间：2026年10月20日"
+  },
+  "content_sha256": "b97abe48d12277b7bef2e6948cbb262536b1c7c36ee2f5363e970618cf9c5238",
+  "body": "announcement_id: SYN-CNINFO-300750-20261020\nsecurity_code: 300750.SZ\nreport_period: 2026-09-30\n公告时间：2026年10月20日\nRevenue 12,345 synthetic\n",
+  "synthetic": true,
+  "note": "Synthetic listing record. Not a CATL filing and not a market reading."
+}
