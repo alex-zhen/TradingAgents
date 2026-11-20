@@ -25,7 +25,20 @@ python integrations/external_runner/public_market_evidence.py \
   --expected-currency HKD --method get_stock_data
 ```
 
-`get_stock_data` receives the options block. `get_news` receives the social block. Other tools are left unchanged. When the chain validates, the options block says not to claim that listed options are unavailable.
+`get_stock_data` receives the options block. `get_news` receives the social block. Other tools are left unchanged. When the chain validates, the options block says not to claim that listed options are unavailable. A partial chain does not say that.
+
+The staged runner reads `decision_at:` from the digest text. It does not take the cutoff from `DATE` or from `TRADINGAGENTS_DECISION_AT`. The session compared with the JSON is the runner `DATE`. The patcher accepts only source sha256 `49f0612df01d86d5c651cd92749a3053b55d9374df381894ebed2d55a7fa0c14`.
+
+Preflight runs the staged tool route with a stub vendor and does not load a model. Replace the JSON path with a real public snapshot when one exists. `PARENT_COPY` is the directory where this archive was unpacked:
+
+```bash
+python3 PARENT_COPY/preflight_public_evidence.py \
+  --runner PARENT_COPY/run_ta.py.staged \
+  --file PARENT_COPY/fixtures/synthetic_public_0700.json \
+  --symbol 0700.HK --session-date 2026-11-18 \
+  --decision-at 2026-11-18T16:10:00+08:00 \
+  --expected-currency HKD
+```
 
 Local check:
 

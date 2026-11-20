@@ -1,7 +1,7 @@
 """Insert the public-evidence hook after the xueqiu hook.
 
 The source file is never written. The official-fundamentals function is not
-edited. The input must be the live runner sha256 6d269117.
+edited. The input must be the current runner sha256 49f0612.
 """
 
 from __future__ import annotations
@@ -11,7 +11,7 @@ import hashlib
 import sys
 from pathlib import Path
 
-SOURCE_SHA = "6d2691173afd287dd9b69fcd0f77b4518089c81cd56e8eb595f21f51f6d7842a"
+SOURCE_SHA = "49f0612df01d86d5c651cd92749a3053b55d9374df381894ebed2d55a7fa0c14"
 ANCHOR = "# === XUEQIU HOOK END =======================================================\n"
 HOOK = Path(__file__).with_name("public_evidence_hook.txt").read_text(encoding="utf-8")
 if not HOOK.endswith("\n"):

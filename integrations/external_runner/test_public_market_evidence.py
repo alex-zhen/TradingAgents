@@ -191,32 +191,43 @@ Revenue 100,000
     assert "latest_discovery_verified: not established by this hook" in shown
 
 
-def test_staged_runner_hook_calls_the_loader_without_a_model(monkeypatch, capsys):
+def _staged_text():
     from patch_public_evidence_hook import patch_bytes
+    base = (HERE / "fixtures" / "run_ta_49f0612.py").read_bytes()
+    return base, patch_bytes(base).decode()
+
+
+def test_staged_runner_hook_calls_the_loader_without_a_model(monkeypatch, capsys, tmp_path):
+    from patch_public_evidence_hook import PatchMismatch, patch_bytes
     from preflight_public_evidence import main as preflight_main
-    base = (HERE / "fixtures" / "run_ta_6d269117.py").read_bytes()
-    assert hashlib.sha256(base).hexdigest() == "6d2691173afd287dd9b69fcd0f77b4518089c81cd56e8eb595f21f51f6d7842a"
-    staged = patch_bytes(base).decode()
-    official_base = base.decode().split("def _official_fundamentals_block", 1)[1].split("def _official_not_applicable", 1)[0]
-    official_staged = staged.split("def _official_fundamentals_block", 1)[1].split("def _official_not_applicable", 1)[0]
+    try:
+        patch_bytes((HERE / "fixtures" / "run_ta_6d269117.py").read_bytes())
+    except PatchMismatch:
+        pass
+    else:
+        raise AssertionError("old runner image was accepted")
+    base, staged = _staged_text()
+    official_base = base.decode().split("def _labeled_availability", 1)[1].split("def _official_not_applicable", 1)[0]
+    official_staged = staged.split("def _labeled_availability", 1)[1].split("def _official_not_applicable", 1)[0]
     assert official_base == official_staged
     start = staged.find("def _norm_listing")
     end = staged.find("# === PUBLIC EVIDENCE HOOK END")
     assert start > 0 and end > start
     monkeypatch.setenv("TRADINGAGENTS_PUBLIC_EVIDENCE_DIR", str(HERE))
     monkeypatch.setenv("TRADINGAGENTS_PUBLIC_EVIDENCE", str(FIXTURE))
-    monkeypatch.setenv("TRADINGAGENTS_DECISION_AT", DECISION)
     monkeypatch.setenv("TRADINGAGENTS_EVIDENCE_CURRENCY", "HKD")
+    monkeypatch.delenv("TRADINGAGENTS_DECISION_AT", raising=False)
+    sent = f"ticker: HK.00700\nprice_session_date: {SESSION}\ndecision_at: {DECISION}\n"
     namespace = {
         "sys": sys,
         "T": type("T", (), {"route_to_vendor": staticmethod(lambda *a, **k: VENDOR)})(),
         "TICKER": "0700.HK",
         "DATE": SESSION,
-        "sent": "",
+        "sent": sent,
         "sent_block": "\nSENTINEL_NEWS\n",
         "opt_block": "\nSENTINEL_OPTIONS\n",
     }
-    exec(staged[start:end] + "\n# end\n", namespace)
+    exec(staged[start:end] + "\n", namespace)
     prices = namespace["T"].route_to_vendor("get_stock_data", "HK.00700")
     news = namespace["T"].route_to_vendor("get_news", "0700.HK")
     fundamentals = namespace["T"].route_to_vendor("get_fundamentals", "0700.HK")
@@ -224,23 +235,94 @@ def test_staged_runner_hook_calls_the_loader_without_a_model(monkeypatch, capsys
     assert "Hong Kong listed options are not available" not in prices
     assert "UNTRUSTED PUBLIC TEXT" in news
     assert "iv 0.2" not in fundamentals
-    monkeypatch.delenv("TRADINGAGENTS_DECISION_AT")
+    namespace["sent"] = f"ticker: 0700.HK\nprice_session_date: {SESSION}\n"
     namespace["T"].route_to_vendor = staticmethod(lambda *a, **k: VENDOR)
-    exec(staged[start:end] + "\n# end\n", namespace)
+    exec(staged[start:end] + "\n", namespace)
     skipped = namespace["T"].route_to_vendor("get_stock_data", "0700.HK")
     assert "status: not_applied" in skipped
     assert "iv 0.2" not in skipped
     assert "DATE was not used as the decision cutoff." in skipped
+    staged_path = tmp_path / "run_ta.py.staged"
+    staged_path.write_text(staged, encoding="utf-8")
     code = preflight_main([
-        "--file", str(FIXTURE), "--symbol", "0700.HK", "--session-date", SESSION,
-        "--decision-at", DECISION, "--expected-currency", "HKD",
+        "--runner", str(staged_path), "--file", str(FIXTURE), "--symbol", "0700.HK",
+        "--session-date", SESSION, "--decision-at", DECISION, "--expected-currency", "HKD",
     ])
     printed = capsys.readouterr().out
     assert code == 0
-    assert "=== get_stock_data ===" in printed
-    assert "iv 0.2 decimal" in printed
-    assert "=== get_news ===" in printed
-    assert "UNTRUSTED PUBLIC TEXT" in printed
-    assert "=== get_fundamentals ===" in printed
-    assert "VENDOR FUNDAMENTALS" in printed
+    assert "=== get_stock_data ===" in printed and "iv 0.2 decimal" in printed
+    assert "=== get_news ===" in printed and "UNTRUSTED PUBLIC TEXT" in printed
     assert "iv 0.2" not in printed.split("=== get_fundamentals ===", 1)[1]
+
+
+def test_staged_official_gate_keeps_dateline_bind_and_rejects_notice_time():
+    base, staged = _staged_text()
+    assert hashlib.sha256(base).hexdigest().startswith("49f0612")
+    start = staged.find("def _norm_listing")
+    end = staged.find("_orig = T.route_to_vendor")
+    namespace = {}
+    exec(staged[start:end], namespace)
+    block = namespace["_official_fundamentals_block"]
+    digest = (HERE / "fixtures" / "xiaomi_1810_operator_2026-11-18.md").read_text(encoding="utf-8")
+    before = block(digest, "2026-08-01T12:00:00+08:00")
+    same = block(digest, "2026-08-18T12:00:00+08:00")
+    nxt = block(digest, "2026-08-19T12:00:00+08:00")
+    assert "108,921.6" not in before and "108,921.6" not in same
+    assert "108,921.6" in nxt and "208,063.2" in nxt
+    assert "publication_dateline: August 18, 2026" in nxt
+    assert "availability: 2026-08-18" in nxt
+    assert "availability: 2026-06-30" not in nxt
+    tencent = (HERE / "fixtures" / "tencent_operator_2026-11-18.md").read_text(encoding="utf-8")
+    assert "207,336" not in block(tencent, "2026-11-18T16:00:00+08:00")
+    assert "207,336" in block(tencent, "2026-11-18T19:34:57+08:00")
+    notice = """ticker: 300750.SZ
+decision_at: 2026-11-19T10:00:00+08:00
+公告时间：2026年10月15日
+http://static.cninfo.com.cn/finalpage/2026-10-15/123.pdf
+## Financial report
+Revenue 100,000
+"""
+    shown = block(notice, "2026-11-19T10:00:00+08:00")
+    assert "100,000" not in shown
+    assert "MISSING:" in shown
+    assert "latest_discovery_verified: true" not in shown
+
+
+def _route(monkeypatch, sent: str, date: str = SESSION):
+    monkeypatch.setenv("TRADINGAGENTS_PUBLIC_EVIDENCE_DIR", str(HERE))
+    monkeypatch.setenv("TRADINGAGENTS_PUBLIC_EVIDENCE", str(FIXTURE))
+    monkeypatch.setenv("TRADINGAGENTS_EVIDENCE_CURRENCY", "HKD")
+    _base, staged = _staged_text()
+    start = staged.find("def _norm_listing")
+    end = staged.find("# === PUBLIC EVIDENCE HOOK END")
+    namespace = {
+        "sys": sys,
+        "T": type("T", (), {"route_to_vendor": staticmethod(lambda *a, **k: VENDOR)})(),
+        "TICKER": "0700.HK",
+        "DATE": date,
+        "sent": sent,
+        "sent_block": "",
+        "opt_block": "",
+    }
+    exec(staged[start:end] + "\n", namespace)
+    return namespace["T"].route_to_vendor
+
+
+def test_staged_route_rejects_wrong_symbol_session_and_future_cutoff(monkeypatch):
+    wrong = _route(monkeypatch, f"ticker: 0700.HK\nprice_session_date: {SESSION}\ndecision_at: {DECISION}\n")
+    prices = wrong("get_stock_data", "AAPL")
+    assert "status: rejected" in prices
+    assert "iv 0.2" not in prices
+    stale = _route(
+        monkeypatch,
+        "ticker: 0700.HK\nprice_session_date: 2026-11-20\ndecision_at: 2026-11-20T10:00:00+08:00\n",
+        date="2026-11-20",
+    )
+    assert "status: rejected" in stale("get_stock_data", "0700.HK")
+    assert "iv 0.2" not in stale("get_news", "0700.HK")
+    future = _route(
+        monkeypatch,
+        "ticker: 0700.HK\nprice_session_date: 2026-11-18\ndecision_at: 2026-11-18T16:00:00+08:00\n",
+    )
+    assert "status: rejected" in future("get_stock_data", "0700.HK")
+    assert "validated_public_options" not in future("get_stock_data", "0700.HK")
