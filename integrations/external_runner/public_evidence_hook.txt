@@ -1,0 +1,43 @@
+# === PUBLIC EVIDENCE HOOK START ===============================================
+# Additive. Does not change the official-fundamentals block above.
+# DATE is the trade/session date. TRADINGAGENTS_DECISION_AT is the cutoff.
+# A missing cutoff is not filled in from DATE.
+try:
+    import os as _pe_os
+    import sys as _pe_sys
+    from pathlib import Path as _PePath
+    _pe_dir = _pe_os.environ.get("TRADINGAGENTS_PUBLIC_EVIDENCE_DIR", "/workspace/tradingagents-runs")
+    if _pe_dir not in _pe_sys.path:
+        _pe_sys.path.insert(0, _pe_dir)
+    from public_market_evidence import attach_public_evidence as _pe_attach
+    _pe_prev = T.route_to_vendor
+    def _pe_patched(method, *a, **k):
+        out = _pe_prev(method, *a, **k)
+        if method not in {"get_stock_data", "get_news"}:
+            return out
+        requested = k.get("ticker") or k.get("symbol") or (a[0] if a else "")
+        decision_at = _pe_os.environ.get("TRADINGAGENTS_DECISION_AT", "").strip()
+        evidence = _pe_os.environ.get("TRADINGAGENTS_PUBLIC_EVIDENCE", "").strip()
+        if not decision_at or not evidence:
+            return (
+                out
+                + "\n\n=== PUBLIC MARKET EVIDENCE ===\n"
+                + "status: not_applied\n"
+                + "TRADINGAGENTS_DECISION_AT and TRADINGAGENTS_PUBLIC_EVIDENCE are required. "
+                + "DATE was not used as the decision cutoff.\n"
+                + "=== END PUBLIC MARKET EVIDENCE ===\n"
+            )
+        currency = _pe_os.environ.get("TRADINGAGENTS_EVIDENCE_CURRENCY", "").strip() or None
+        return _pe_attach(
+            out,
+            method,
+            requested_symbol=str(requested),
+            session_date=DATE,
+            decision_at=decision_at,
+            path=_PePath(evidence),
+            expected_currency=currency,
+        )
+    T.route_to_vendor = _pe_patched
+except Exception as _pe_exc:
+    print("public evidence hook skipped:", _pe_exc)
+# === PUBLIC EVIDENCE HOOK END =================================================

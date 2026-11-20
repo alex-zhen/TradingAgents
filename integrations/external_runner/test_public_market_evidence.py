@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import sys
 from pathlib import Path
@@ -188,3 +189,58 @@ Revenue 100,000
     assert "MISSING:" in shown
     assert "latest_discovery_verified: true" not in shown
     assert "latest_discovery_verified: not established by this hook" in shown
+
+
+def test_staged_runner_hook_calls_the_loader_without_a_model(monkeypatch, capsys):
+    from patch_public_evidence_hook import patch_bytes
+    from preflight_public_evidence import main as preflight_main
+    base = (HERE / "fixtures" / "run_ta_6d269117.py").read_bytes()
+    assert hashlib.sha256(base).hexdigest() == "6d2691173afd287dd9b69fcd0f77b4518089c81cd56e8eb595f21f51f6d7842a"
+    staged = patch_bytes(base).decode()
+    official_base = base.decode().split("def _official_fundamentals_block", 1)[1].split("def _official_not_applicable", 1)[0]
+    official_staged = staged.split("def _official_fundamentals_block", 1)[1].split("def _official_not_applicable", 1)[0]
+    assert official_base == official_staged
+    start = staged.find("def _norm_listing")
+    end = staged.find("# === PUBLIC EVIDENCE HOOK END")
+    assert start > 0 and end > start
+    monkeypatch.setenv("TRADINGAGENTS_PUBLIC_EVIDENCE_DIR", str(HERE))
+    monkeypatch.setenv("TRADINGAGENTS_PUBLIC_EVIDENCE", str(FIXTURE))
+    monkeypatch.setenv("TRADINGAGENTS_DECISION_AT", DECISION)
+    monkeypatch.setenv("TRADINGAGENTS_EVIDENCE_CURRENCY", "HKD")
+    namespace = {
+        "sys": sys,
+        "T": type("T", (), {"route_to_vendor": staticmethod(lambda *a, **k: VENDOR)})(),
+        "TICKER": "0700.HK",
+        "DATE": SESSION,
+        "sent": "",
+        "sent_block": "\nSENTINEL_NEWS\n",
+        "opt_block": "\nSENTINEL_OPTIONS\n",
+    }
+    exec(staged[start:end] + "\n# end\n", namespace)
+    prices = namespace["T"].route_to_vendor("get_stock_data", "HK.00700")
+    news = namespace["T"].route_to_vendor("get_news", "0700.HK")
+    fundamentals = namespace["T"].route_to_vendor("get_fundamentals", "0700.HK")
+    assert "iv 0.2 decimal" in prices
+    assert "Hong Kong listed options are not available" not in prices
+    assert "UNTRUSTED PUBLIC TEXT" in news
+    assert "iv 0.2" not in fundamentals
+    monkeypatch.delenv("TRADINGAGENTS_DECISION_AT")
+    namespace["T"].route_to_vendor = staticmethod(lambda *a, **k: VENDOR)
+    exec(staged[start:end] + "\n# end\n", namespace)
+    skipped = namespace["T"].route_to_vendor("get_stock_data", "0700.HK")
+    assert "status: not_applied" in skipped
+    assert "iv 0.2" not in skipped
+    assert "DATE was not used as the decision cutoff." in skipped
+    code = preflight_main([
+        "--file", str(FIXTURE), "--symbol", "0700.HK", "--session-date", SESSION,
+        "--decision-at", DECISION, "--expected-currency", "HKD",
+    ])
+    printed = capsys.readouterr().out
+    assert code == 0
+    assert "=== get_stock_data ===" in printed
+    assert "iv 0.2 decimal" in printed
+    assert "=== get_news ===" in printed
+    assert "UNTRUSTED PUBLIC TEXT" in printed
+    assert "=== get_fundamentals ===" in printed
+    assert "VENDOR FUNDAMENTALS" in printed
+    assert "iv 0.2" not in printed.split("=== get_fundamentals ===", 1)[1]
