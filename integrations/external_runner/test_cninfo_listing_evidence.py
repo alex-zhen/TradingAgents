@@ -124,8 +124,8 @@ def test_wrong_security_pdf_hash_period_id_and_source_are_rejected(tmp_path):
     assert "report_period" in " ".join(_view(_write(tmp_path, period)).reasons)
     ident = _base()
     ident["announcement_id"] = "SYN-OTHER-0001"
-    ident["pdf_url"] = "https://static.cninfo.com.cn/finalpage/2026-08-01/SYN-OTHER-0001.PDF"
     assert "announcement_id" in " ".join(_view(_write(tmp_path, ident)).reasons)
+    assert "reason_code: announcement_id_not_in_url" in _shown(_write(tmp_path, ident))
     external = _base()
     external["source"] = "eastmoney"
     assert "source" in " ".join(_view(_write(tmp_path, external)).reasons)
@@ -235,3 +235,81 @@ Revenue 100,000
     assert code == 0
     assert "status: admitted" in printed.split("=== get_stock_data ===", 1)[0]
     assert MARKER in printed and "100,000" not in printed
+
+
+CATL = HERE / "fixtures" / "cninfo_real" / "300750.SZ" / "listing_v1_truthful.json"
+MOUTAI = HERE / "fixtures" / "cninfo_real" / "600519.SH" / "listing_v1_truthful.json"
+MUTATED = HERE / "fixtures" / "cninfo_real" / "mutated"
+
+
+def test_real_filings_admit_on_the_next_cash_session_and_withhold_earlier_dates():
+    catl = _shown(CATL, symbol="300750.SZ", decision="2026-10-22T15:00:00+08:00")
+    assert "status: admitted" in catl
+    assert "availability_precision: date" in catl
+    assert "midnight_placeholder: true" in catl
+    assert "source_label: 公告时间" in catl
+    assert "platform_announcement_id: 1225613175" in catl
+    assert "platform_announcement_id_in_pdf_body: false" in catl
+    assert "issuer_notice_number: 2026-097" in catl
+    assert "issuer_notice_number_is_not_the_platform_id: true" in catl
+    assert "165,220,844" in catl
+    assert "latest_discovery_verified: true" not in catl
+    assert "status: admitted" in _shown(CATL, symbol="300750.SZ", decision="2026-11-18T22:41:08.989419+08:00")
+    same = _shown(CATL, symbol="300750.SZ", decision="2026-10-21T18:00:00+08:00")
+    board = _shown(CATL, symbol="300750.SZ", decision="2026-10-20T18:00:00+08:00")
+    assert "reason_code: date_only_same_day" in same and "165,220,844" not in same
+    assert "reason_code: cutoff_before_publication" in board and "165,220,844" not in board
+    assert "announcement_id_not_in_url" not in same and "report_period_not_in_body" not in same
+    missing = _view(CATL, symbol="300750.SZ", decision="")
+    naive = _view(CATL, symbol="300750.SZ", decision="2026-10-22T15:00:00")
+    assert missing.codes == ["decision_at_missing"]
+    assert naive.codes == ["decision_at_naive"]
+    moutai = _shown(MOUTAI, symbol="600519.SH", decision="2026-11-02T15:00:00+08:00")
+    assert "status: admitted" in moutai
+    assert "platform_announcement_id: 1225649896" in moutai
+    assert "platform_announcement_id_in_pdf_body: false" in moutai
+    assert "40,267,482,684.56" in moutai
+    assert "issuer_notice_number:" not in moutai
+    sunday = _shown(MOUTAI, symbol="600519.SH", decision="2026-11-01T15:00:00+08:00")
+    saturday = _shown(MOUTAI, symbol="600519.SH", decision="2026-10-31T15:00:00+08:00")
+    board_day = _shown(MOUTAI, symbol="600519.SH", decision="2026-10-29T15:00:00+08:00")
+    stored = _shown(MOUTAI, symbol="600519.SH", decision="2026-10-30T18:38:28+08:00")
+    assert "reason_code: not_trading_session" in sunday and "Saturday and Sunday" in sunday
+    assert "40,267,482,684.56" not in sunday
+    assert "reason_code: date_only_same_day" in saturday
+    assert "reason_code: cutoff_before_publication" in board_day
+    assert "reason_code: cutoff_before_publication" in stored
+    assert "reason_code: storage_time_used" not in stored
+    for name, symbol, code in (
+        ("catl_wrong_id.json", "300750.SZ", "announcement_id_not_in_url"),
+        ("catl_wrong_pdf.json", "300750.SZ", "announcement_id_not_in_url"),
+        ("catl_wrong_hash.json", "300750.SZ", "content_hash_mismatch"),
+        ("catl_wrong_period.json", "300750.SZ", "report_period_not_in_body"),
+        ("catl_wrong_code.json", "300750.SZ", "security_mismatch"),
+        ("moutai_wrong_hash.json", "600519.SH", "content_hash_mismatch"),
+    ):
+        view = _view(MUTATED / name, symbol=symbol, decision="2026-11-18T12:00:00+08:00")
+        assert view.status == "rejected", name
+        assert code in view.codes, (name, view.codes)
+        assert "date_only_same_day" not in view.codes
+        assert "not_trading_session" not in view.codes
+
+
+def test_staged_route_reads_real_filings_without_using_the_session_date(tmp_path):
+    from preflight_cninfo_listing import execute_staged
+    _base_bytes, staged = _staged()
+    del _base_bytes
+    runner = tmp_path / "run_ta.py.staged"
+    runner.write_text(staged, encoding="utf-8")
+    catl = execute_staged(runner, CATL, "300750.SZ", "2026-10-21", "2026-10-22T15:00:00+08:00")
+    funds = catl.split("=== get_stock_data ===", 1)[0]
+    assert "status: admitted" in funds and "165,220,844" in funds and "100,000" not in funds
+    assert "source_label: 公告时间" in funds
+    moutai = execute_staged(runner, MOUTAI, "600519.SH", "2026-11-02", "2026-11-02T15:00:00+08:00")
+    assert "status: admitted" in moutai.split("=== get_stock_data ===", 1)[0]
+    sunday = execute_staged(runner, MOUTAI, "600519.SH", "2026-11-02", "2026-11-01T15:00:00+08:00")
+    assert "reason_code: not_trading_session" in sunday
+    assert "40,267,482,684.56" not in sunday
+    missing = execute_staged(runner, CATL, "300750.SZ", "2026-10-22", "")
+    assert "decision_at is missing. DATE was not used as the decision cutoff." in missing
+    assert "165,220,844" not in missing

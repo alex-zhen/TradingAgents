@@ -35,8 +35,9 @@ OFFICIAL_HOSTS = {
     "sse": {"www.sse.com.cn", "static.sse.com.cn"},
     "szse": {"www.szse.cn", "disc.szse.cn", "disc.static.szse.cn"},
 }
-PERIOD = re.compile(r"\d{4}-\d{2}-\d{2}|20\d{2}年\d{1,2}月\d{1,2}日")
 ANNOUNCEMENT_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9_-]{3,128}")
+CN_DATE = re.compile(r"(20\d{2})\s*年\s*(\d{1,2})\s*月\s*(\d{1,2})\s*日")
+ISO_DATE = re.compile(r"(20\d{2})-(\d{2})-(\d{2})")
 
 
 @dataclass
@@ -44,6 +45,7 @@ class ListingView:
     status: str
     reasons: list[str] = field(default_factory=list)
     text: str = ""
+    codes: list[str] = field(default_factory=list)
 
 
 def same_security(left: str, right: str) -> bool:
@@ -106,8 +108,65 @@ def _publication(value: str):
     return "timestamp", parsed.date(), parsed
 
 
-def _reject(reasons: list[str]) -> ListingView:
-    return ListingView("rejected", reasons)
+def _share_code(value: str) -> str:
+    text = (value or "").strip().upper().replace(" ", "")
+    match = re.fullmatch(r"(\d{6})(?:\.(?:SZ|SH|SS|BJ))?", text)
+    return match.group(1) if match else ""
+
+
+def _parsed_period(value: str) -> date | None:
+    text = (value or "").strip()
+    as_date = _date_value(text)
+    if as_date is not None:
+        return as_date
+    match = CN_DATE.fullmatch(text)
+    if match:
+        return date(int(match.group(1)), int(match.group(2)), int(match.group(3)))
+    return None
+
+
+def _body_has_date(body: str, target: date) -> bool:
+    """Match a date after removing spaces. 09 and 9 stay the same calendar day."""
+    for match in CN_DATE.finditer(body or ""):
+        found = date(int(match.group(1)), int(match.group(2)), int(match.group(3)))
+        if found == target:
+            return True
+    for match in ISO_DATE.finditer(body or ""):
+        found = date(int(match.group(1)), int(match.group(2)), int(match.group(3)))
+        if found == target:
+            return True
+    return False
+
+
+def _body_has_security(body: str, security: str) -> bool:
+    code = _share_code(security)
+    if not code:
+        return bool(security) and security in (body or "")
+    return re.search(rf"证券代码\s*[：:]\s*{code}(?!\d)", body or "") is not None
+
+
+def _cash_session(day: date) -> bool:
+    """SSE and SZSE have no cash session on Saturday or Sunday."""
+    return day.weekday() < 5
+
+
+def _cutoff(value: str):
+    text = (value or "").strip()
+    if not text:
+        return "decision_at_missing", None
+    if text.endswith("Z"):
+        text = text[:-1] + "+00:00"
+    try:
+        parsed = datetime.fromisoformat(text)
+    except ValueError:
+        return "decision_at_invalid", None
+    if parsed.tzinfo is None or parsed.tzinfo.utcoffset(parsed) is None:
+        return "decision_at_naive", None
+    return "", parsed
+
+
+def _view(status: str, reasons: list[str], codes: list[str], text: str = "") -> ListingView:
+    return ListingView(status, reasons, text, codes)
 
 
 def load_cninfo_listing_evidence(
@@ -122,105 +181,177 @@ def load_cninfo_listing_evidence(
     try:
         payload = json.loads(Path(path).read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError):
-        return _reject(["listing evidence is not readable json"])
+        return _view("rejected", ["listing evidence is not readable json"], ["listing_unreadable"])
     if not isinstance(payload, dict):
-        return _reject(["listing evidence is not an object"])
+        return _view("rejected", ["listing evidence is not an object"], ["listing_unreadable"])
     reasons: list[str] = []
+    codes: list[str] = []
+
+    def fail(code: str, reason: str) -> None:
+        codes.append(code)
+        reasons.append(reason)
+
     if payload.get("schema") != SCHEMA:
-        reasons.append("schema is not an official listing record")
+        fail("schema_invalid", "schema is not an official listing record")
     source = str(payload.get("source") or "")
     if source not in OFFICIAL_HOSTS:
-        reasons.append("source is not an official cninfo or exchange listing")
+        fail("source_not_official", "source is not an official cninfo or exchange listing")
     label = payload.get("source_label")
     if label not in SOURCE_LABELS:
-        reasons.append("source_label must remain 公告时间 or announcementTime")
+        fail("source_label_invalid", "source_label must remain 公告时间 or announcementTime")
     announcement_id = str(payload.get("announcement_id") or "")
     if ANNOUNCEMENT_ID.fullmatch(announcement_id) is None:
-        reasons.append("announcement_id is missing or not a listing id")
+        fail("announcement_id_invalid", "announcement_id is missing or not a platform listing id")
     security = str(payload.get("security_code") or "")
     if not same_security(requested_symbol, security):
-        reasons.append("security_code does not match the requested symbol")
+        fail("security_mismatch", "security_code does not match the requested symbol")
     period = str(payload.get("report_period") or "")
-    if PERIOD.fullmatch(period) is None:
-        reasons.append("report_period is missing or not a period date")
+    period_date = _parsed_period(period)
+    if period_date is None:
+        fail("report_period_invalid", "report_period is missing or not a period date")
     pdf_url = str(payload.get("pdf_url") or "")
     parsed_url = urlparse(pdf_url)
     host = parsed_url.hostname or ""
     if parsed_url.scheme not in {"http", "https"} or host not in OFFICIAL_HOSTS.get(source, set()):
-        reasons.append("pdf_url is not on the official host for the declared source")
+        fail("pdf_url_not_official", "pdf_url is not on the official host for the declared source")
     elif announcement_id and announcement_id not in pdf_url:
-        reasons.append("pdf_url does not contain the announcement_id")
+        fail("announcement_id_not_in_url", "pdf_url does not contain the platform announcement_id")
+    adjunct = str(payload.get("adjunctUrl") or "")
+    if adjunct and announcement_id and announcement_id not in adjunct:
+        fail("announcement_id_not_in_url", "adjunctUrl does not contain the platform announcement_id")
     body = payload.get("body")
     if not isinstance(body, str) or not body.strip():
-        reasons.append("body is missing")
+        fail("body_missing", "body is missing")
         body = ""
     declared_hash = str(payload.get("content_sha256") or "").lower()
     actual_hash = hashlib.sha256(body.encode("utf-8")).hexdigest()
     if not re.fullmatch(r"[0-9a-f]{64}", declared_hash) or declared_hash != actual_hash:
-        reasons.append("content_sha256 does not match the body")
-    if body and announcement_id and announcement_id not in body:
-        reasons.append("body does not contain the announcement_id")
-    if body and security and security not in body:
-        reasons.append("body does not contain the security_code")
-    if body and period and period not in body:
-        reasons.append("body does not contain the report_period")
+        fail("content_hash_mismatch", "content_sha256 does not match the body")
+    pdf_declared = str(payload.get("pdf_file_sha256") or "").lower()
+    pdf_side = Path(path).parent / "pdf" / f"{announcement_id}.PDF"
+    if pdf_side.is_file():
+        pdf_actual = hashlib.sha256(pdf_side.read_bytes()).hexdigest()
+        if pdf_declared != pdf_actual:
+            fail("pdf_hash_mismatch", "pdf_file_sha256 does not match the PDF bytes")
+    if body and not _body_has_security(body, security):
+        fail("security_not_in_body", "body does not contain the security code")
+    company = str(payload.get("secName") or payload.get("company_name") or "")
+    if not company:
+        fail("company_missing", "company name is missing")
+    elif body and company not in body:
+        fail("company_not_in_body", "body does not contain the company name")
+    if body and period_date is not None and not _body_has_date(body, period_date):
+        fail("report_period_not_in_body", "report_period is not in the body")
     publication = payload.get("publication")
     if not isinstance(publication, dict):
-        reasons.append("publication is missing")
+        fail("publication_missing", "publication is missing")
         publication = {}
     raw = str(publication.get("raw") or "")
-    if any(token in raw for token in ("落款", "截至", "period ended", "period end")):
-        reasons.append("publication raw text is a board signature or period end")
+    if raw and not any(token in raw for token in ("公告时间", "announcementTime")):
+        fail("publication_raw_unlabelled", "publication raw text is not an 公告时间 or announcementTime label")
+    elif any(token in raw for token in ("落款", "截至", "period ended", "period end")):
+        fail("publication_raw_not_listing_time", "publication raw text is a board signature or period end")
     kind, published_date, published_at = _publication(str(publication.get("value") or ""))
     if kind == "invalid":
-        reasons.append("publication value is not a date or timestamp")
+        fail("publication_invalid", "publication value is not a date or timestamp")
     elif kind == "naive":
-        reasons.append("publication timestamp has no timezone")
+        fail("publication_naive", "publication timestamp has no timezone")
     board = _date_value(str(payload.get("board_signature_date") or ""))
     period_end = _date_value(str(payload.get("period_end") or ""))
+    if period_date is not None and period_end is not None and period_date != period_end:
+        fail("report_period_mismatch", "report_period does not match period_end")
     if published_date is not None and board is not None and published_date == board:
-        reasons.append("board signature date is not the publication time")
+        fail("board_signature_used", "board signature date is not the publication time")
     if published_date is not None and period_end is not None and published_date == period_end:
-        reasons.append("period end is not the publication time")
-    cutoff = _aware(decision_at)
-    if cutoff is None:
-        reasons.append("decision_at is missing or not timezone-aware. DATE was not used as the decision cutoff.")
+        fail("period_end_used", "period end is not the publication time")
+    storage_text = str(payload.get("storageTime_asia_shanghai") or "")
+    storage_at = _aware(storage_text) if storage_text else None
+    if published_at is not None and storage_at is not None and published_at == storage_at:
+        fail("storage_time_used", "storageTime is not the publication time")
+    cutoff_code, cutoff = _cutoff(decision_at)
+    if cutoff_code == "decision_at_missing":
+        fail("decision_at_missing", "decision_at is missing. DATE was not used as the decision cutoff.")
+    elif cutoff_code == "decision_at_naive":
+        fail("decision_at_naive", "decision_at has no timezone. DATE was not used as the decision cutoff.")
+    elif cutoff_code:
+        fail("decision_at_invalid", "decision_at is not a timestamp. DATE was not used as the decision cutoff.")
     if reasons or published_date is None or cutoff is None:
-        return _reject(reasons or ["listing evidence is incomplete"])
+        return _view("rejected", reasons, codes)
     midnight = kind == "date" and published_at is not None
     if kind == "timestamp" and published_at is not None:
         if cutoff < published_at:
-            return ListingView("withheld", ["official publication time is after the decision cutoff"])
+            return _view(
+                "withheld",
+                ["official publication time is after the decision cutoff"],
+                ["cutoff_before_publication"],
+            )
         precision = "timestamp"
         shown = published_at.isoformat()
+        session_note = ""
     else:
-        if cutoff.date() <= published_date:
-            reason = "date-only publication is not used for a same-day decision"
-            if midnight:
-                reason = "midnight placeholder is date-only and is not a precise publication time"
-            return ListingView("withheld", [reason])
+        if cutoff.date() < published_date:
+            return _view(
+                "withheld",
+                ["decision cutoff is before the date-only publication"],
+                ["cutoff_before_publication"],
+            )
+        if cutoff.date() == published_date:
+            return _view(
+                "withheld",
+                ["date-only publication is not used for a same-day decision"],
+                ["date_only_same_day"],
+            )
+        if not _cash_session(cutoff.date()):
+            return _view(
+                "withheld",
+                [
+                    "decision date "
+                    + cutoff.date().isoformat()
+                    + " is after the publication date but is not an SSE or SZSE cash session. "
+                    + "Saturday and Sunday are not sessions, so the next calendar day is not enough."
+                ],
+                ["not_trading_session"],
+            )
         precision = "date"
         shown = published_date.isoformat()
+        session_note = "trading_session: weekday cash session"
+    notice = re.search(r"公告编号\s*[：:]\s*([0-9]{4}-[0-9]{3})", body)
+    in_body = announcement_id in body
     lines = [
         "status: admitted",
         f"source: {source}",
         f"source_label: {label}",
-        f"announcement_id: {announcement_id}",
+        f"platform_announcement_id: {announcement_id}",
+        "platform_announcement_id_bound_by: official metadata and pdf_url",
+        f"platform_announcement_id_in_pdf_body: {str(in_body).lower()}",
         f"security_code: {security}",
+        f"company_name: {company}",
         f"report_period: {period}",
         f"pdf_url: {pdf_url}",
         f"content_sha256: {actual_hash}",
         f"availability: {shown}",
         f"availability_precision: {precision}",
+        "storage_time_used: false",
         f"publication_raw: {raw}",
         "latest_discovery_verified: not established by this evidence",
         "coverage: the report period is recorded. Latest disclosure discovery is not proven by this evidence.",
         "body:",
         body.strip(),
     ]
+    if notice:
+        lines.insert(6, f"issuer_notice_number: {notice.group(1)}")
+        lines.insert(7, "issuer_notice_number_is_not_the_platform_id: true")
     if midnight:
-        lines.insert(10, "midnight_placeholder: true")
-    return ListingView("admitted", [], "\n".join(lines))
+        lines.insert(12, "midnight_placeholder: true")
+    if session_note:
+        lines.insert(13, session_note)
+    return _view("admitted", [], [], "\n".join(lines))
+
+
+def _reason_block(view: ListingView) -> str:
+    lines = [f"reason_code: {code}" for code in view.codes]
+    lines.extend(view.reasons)
+    return "\n".join(lines)
 
 
 def render_listing(view: ListingView) -> str:
@@ -230,13 +361,13 @@ def render_listing(view: ListingView) -> str:
     if view.status == "absent":
         return (
             f"\n\n=== {title} ===\nstatus: evidence_absent\n"
-            + "\n".join(view.reasons)
+            + _reason_block(view)
             + "\nlatest_discovery_verified: not established by this evidence\n"
             + f"=== END {title} ===\n"
         )
     return (
         f"\n\n=== {title} ===\nstatus: {view.status}\n"
-        + "\n".join(view.reasons)
+        + _reason_block(view)
         + "\nlatest_discovery_verified: not established by this evidence\n"
         + f"=== END {title} ===\n"
     )

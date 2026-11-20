@@ -18,7 +18,7 @@ try:
         evidence = _cn_os.environ.get("TRADINGAGENTS_CNINFO_LISTING", "").strip()
         if not evidence:
             return out
-        _declared = __import__("re").search(r"(?m)^decision_at:\s*(\S+)", sent or "")
+        _declared = __import__("re").search(r"(?m)^decision_at:[ \t]*(\S+)", sent or "")
         requested = k.get("ticker") or k.get("symbol") or (a[0] if a else "")
         if not _declared:
             return (

@@ -6,13 +6,14 @@ The record is admitted only when all of these correspond:
 
 - `schema` is `tradingagents.cninfo_listing_evidence.v1`
 - `source` is `cninfo`, `sse`, or `szse`, and `pdf_url` is on that source's official host
-- `announcement_id` appears in the PDF URL and in the body
-- `security_code` matches the requested symbol and appears in the body
-- `report_period` is a period date and appears in the body
-- `content_sha256` is the SHA-256 of the body bytes
-- `publication.value` is the listing time, not a board signature, period end, or URL date
+- `announcement_id` is the CNINFO platform id. It is bound by the official record and the PDF URL. It is not required in the PDF body, and an issuer `公告编号` is not that id.
+- `security_code` matches the requested symbol, and the body contains `证券代码` for that code
+- `secName` appears in the body
+- `report_period` is the same calendar day as a date in the body. Spaces in `2026 年 9 月 30 日` are ignored. The day and month numbers are not otherwise rewritten.
+- `content_sha256` is the SHA-256 of the body bytes. A sibling `pdf/<id>.PDF`, when present, must match `pdf_file_sha256`.
+- `publication.value` is the listing time, not a board signature, period end, `storageTime`, or URL date
 
-A calendar date, and a timestamp at 00:00:00 in any timezone, is date-only. It is included only when the decision date is later. A timezone-aware clock other than midnight is included when the decision cutoff is at or after that clock. A missing or naive `decision_at` is refused. The runner `DATE` is not a substitute.
+A calendar date, and a timestamp at 00:00:00 in any timezone, is date-only. It is included only on a later SSE/SZSE cash session. Saturday and Sunday are not cash sessions, so the next calendar day is not enough when that day is a weekend. A timezone-aware clock other than midnight is included when the decision cutoff is at or after that clock. A missing or naive `decision_at` is refused. The runner `DATE` is not a substitute.
 
 `latest_discovery_verified` stays `not established by this evidence` when a body is shown.
 
