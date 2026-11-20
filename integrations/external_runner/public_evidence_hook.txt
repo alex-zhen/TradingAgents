@@ -1,0 +1,63 @@
+# === PUBLIC EVIDENCE HOOK START ===============================================
+# Additive. The official-fundamentals functions above are not edited.
+# DATE is the trade session. decision_at is taken only from the digest line.
+# DATE is not used as a cutoff when that line is missing.
+try:
+    import os as _pe_os
+    import sys as _pe_sys
+    from pathlib import Path as _PePath
+    _pe_dir = _pe_os.environ.get("TRADINGAGENTS_PUBLIC_EVIDENCE_DIR", "/workspace/tradingagents-runs")
+    if _pe_dir not in _pe_sys.path:
+        _pe_sys.path.insert(0, _pe_dir)
+    from public_market_evidence import attach_public_evidence as _pe_attach
+    from public_market_evidence import same_listing as _pe_same
+    _pe_prev = T.route_to_vendor
+    def _pe_patched(method, *a, **k):
+        out = _pe_prev(method, *a, **k)
+        if method not in {"get_stock_data", "get_news"}:
+            return out
+        requested = k.get("ticker") or k.get("symbol") or (a[0] if a else "")
+        _pe_re = __import__("re")
+        _declared = _pe_re.search(r"(?m)^decision_at:\s*(\S+)", sent or "")
+        _digest_ticker = _pe_re.search(r"(?m)^ticker:\s*(\S+)", sent or "")
+        _digest_session = _pe_re.search(r"(?m)^price_session_date:\s*(\d{4}-\d{2}-\d{2})", sent or "")
+        evidence = _pe_os.environ.get("TRADINGAGENTS_PUBLIC_EVIDENCE", "").strip()
+        if not evidence or not _declared:
+            return (
+                out
+                + "\n\n=== PUBLIC MARKET EVIDENCE ===\n"
+                + "status: not_applied\n"
+                + "A digest decision_at and TRADINGAGENTS_PUBLIC_EVIDENCE are required. "
+                + "DATE was not used as the decision cutoff.\n"
+                + "=== END PUBLIC MARKET EVIDENCE ===\n"
+            )
+        if _digest_session and _digest_session.group(1) != DATE:
+            return (
+                out
+                + "\n\n=== PUBLIC MARKET EVIDENCE ===\n"
+                + "status: not_applied\n"
+                + "digest price_session_date does not match DATE.\n"
+                + "=== END PUBLIC MARKET EVIDENCE ===\n"
+            )
+        if _digest_ticker and not _pe_same(_digest_ticker.group(1), TICKER):
+            return (
+                out
+                + "\n\n=== PUBLIC MARKET EVIDENCE ===\n"
+                + "status: not_applied\n"
+                + "digest ticker does not match the runner symbol.\n"
+                + "=== END PUBLIC MARKET EVIDENCE ===\n"
+            )
+        currency = _pe_os.environ.get("TRADINGAGENTS_EVIDENCE_CURRENCY", "").strip() or None
+        return _pe_attach(
+            out,
+            method,
+            requested_symbol=str(requested),
+            session_date=DATE,
+            decision_at=_declared.group(1),
+            path=_PePath(evidence),
+            expected_currency=currency,
+        )
+    T.route_to_vendor = _pe_patched
+except Exception as _pe_exc:
+    print("public evidence hook skipped:", _pe_exc)
+# === PUBLIC EVIDENCE HOOK END =================================================

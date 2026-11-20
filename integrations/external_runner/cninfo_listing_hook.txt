@@ -1,0 +1,42 @@
+# === CNINFO LISTING HOOK START ================================================
+# Additive. The official date gate and the public-evidence hook are not edited.
+# decision_at is read only from the digest. DATE is not a cutoff.
+# 公告时间 is kept as source_label and is not rewritten as 公告日期.
+try:
+    import os as _cn_os
+    import sys as _cn_sys
+    from pathlib import Path as _CnPath
+    _cn_dir = _cn_os.environ.get("TRADINGAGENTS_CNINFO_LISTING_DIR", "/workspace/tradingagents-runs")
+    if _cn_dir not in _cn_sys.path:
+        _cn_sys.path.insert(0, _cn_dir)
+    from cninfo_listing_evidence import attach_cninfo_listing as _cn_attach
+    _cn_prev = T.route_to_vendor
+    def _cn_patched(method, *a, **k):
+        out = _cn_prev(method, *a, **k)
+        if method not in {"get_fundamentals", "get_balance_sheet", "get_cashflow", "get_income_statement"}:
+            return out
+        evidence = _cn_os.environ.get("TRADINGAGENTS_CNINFO_LISTING", "").strip()
+        if not evidence:
+            return out
+        _declared = __import__("re").search(r"(?m)^decision_at:[ \t]*(\S+)", sent or "")
+        requested = k.get("ticker") or k.get("symbol") or (a[0] if a else "")
+        if not _declared:
+            return (
+                out
+                + "\n\n=== CNINFO LISTING EVIDENCE ===\n"
+                + "status: rejected\n"
+                + "decision_at is missing. DATE was not used as the decision cutoff.\n"
+                + "latest_discovery_verified: not established by this evidence\n"
+                + "=== END CNINFO LISTING EVIDENCE ===\n"
+            )
+        return _cn_attach(
+            out,
+            method,
+            requested_symbol=str(requested),
+            decision_at=_declared.group(1),
+            path=_CnPath(evidence),
+        )
+    T.route_to_vendor = _cn_patched
+except Exception as _cn_exc:
+    print("cninfo listing hook skipped:", _cn_exc)
+# === CNINFO LISTING HOOK END ==================================================

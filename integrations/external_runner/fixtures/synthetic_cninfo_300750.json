@@ -1,0 +1,20 @@
+{
+  "schema": "tradingagents.cninfo_listing_evidence.v1",
+  "source": "cninfo",
+  "source_label": "公告时间",
+  "announcement_id": "SYN-CNINFO-300750-20261020",
+  "security_code": "300750.SZ",
+  "report_period": "2026年9月30日",
+  "period_end": "2026-09-30",
+  "board_signature_date": "2026-10-18",
+  "pdf_url": "https://static.cninfo.com.cn/finalpage/2026-08-01/SYN-CNINFO-300750-20261020.PDF",
+  "publication": {
+    "value": "2026-10-20",
+    "raw": "公告时间：2026年10月20日"
+  },
+  "content_sha256": "bc108d000238aa829bcd2f5684c5919533333b1d02dc420da8093d4b162f0b56",
+  "body": "证券代码：300750\n证券简称：合成样本\nreport_period: 2026 年 9 月 30 日\n公告时间：2026年10月20日\nRevenue 12,345 synthetic\n",
+  "synthetic": true,
+  "note": "Synthetic listing record. Not a CATL filing and not a market reading.",
+  "secName": "合成样本"
+}
